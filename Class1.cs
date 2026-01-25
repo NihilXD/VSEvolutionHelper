@@ -31,6 +31,824 @@ namespace VSEvolutionHelper
         }
     }
 
+    #region Shared UI Utilities
+
+    /// <summary>
+    /// Shared UI helper utilities for creating icons, labels, popups, etc.
+    /// Used by EvolutionDisplay and ArcanaDisplay for consistent UI across all windows.
+    /// </summary>
+    public static class UIHelper
+    {
+        // Cached font reference
+        private static Il2CppTMPro.TMP_FontAsset cachedFont = null;
+        private static UnityEngine.Material cachedFontMaterial = null;
+
+        /// <summary>
+        /// Gets or caches the TMP font from existing UI elements.
+        /// </summary>
+        public static (Il2CppTMPro.TMP_FontAsset font, UnityEngine.Material material) GetFont(UnityEngine.Transform searchRoot)
+        {
+            if (cachedFont != null)
+                return (cachedFont, cachedFontMaterial);
+
+            var existingTMPs = searchRoot.root.GetComponentsInChildren<Il2CppTMPro.TextMeshProUGUI>(true);
+            if (existingTMPs.Length > 0)
+            {
+                cachedFont = existingTMPs[0].font;
+                cachedFontMaterial = existingTMPs[0].fontSharedMaterial;
+            }
+            return (cachedFont, cachedFontMaterial);
+        }
+
+        /// <summary>
+        /// Creates a UI icon with sprite.
+        /// </summary>
+        public static UnityEngine.GameObject CreateIcon(
+            UnityEngine.Transform parent,
+            UnityEngine.Sprite sprite,
+            UnityEngine.Vector2 position,
+            float size,
+            string name = "Icon",
+            bool preserveAspect = true)
+        {
+            var iconObj = new UnityEngine.GameObject(name);
+            iconObj.transform.SetParent(parent, false);
+
+            var rect = iconObj.AddComponent<UnityEngine.RectTransform>();
+            rect.anchorMin = new UnityEngine.Vector2(0f, 0.5f);
+            rect.anchorMax = new UnityEngine.Vector2(0f, 0.5f);
+            rect.pivot = new UnityEngine.Vector2(0f, 0.5f);
+            rect.anchoredPosition = position;
+            rect.sizeDelta = new UnityEngine.Vector2(size, size);
+
+            var image = iconObj.AddComponent<UnityEngine.UI.Image>();
+            image.sprite = sprite;
+            image.preserveAspect = preserveAspect;
+
+            return iconObj;
+        }
+
+        /// <summary>
+        /// Creates a UI icon with custom anchoring.
+        /// </summary>
+        public static UnityEngine.GameObject CreateIcon(
+            UnityEngine.Transform parent,
+            UnityEngine.Sprite sprite,
+            UnityEngine.Vector2 anchorMin,
+            UnityEngine.Vector2 anchorMax,
+            UnityEngine.Vector2 pivot,
+            UnityEngine.Vector2 position,
+            UnityEngine.Vector2 size,
+            string name = "Icon")
+        {
+            var iconObj = new UnityEngine.GameObject(name);
+            iconObj.transform.SetParent(parent, false);
+
+            var rect = iconObj.AddComponent<UnityEngine.RectTransform>();
+            rect.anchorMin = anchorMin;
+            rect.anchorMax = anchorMax;
+            rect.pivot = pivot;
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+
+            var image = iconObj.AddComponent<UnityEngine.UI.Image>();
+            image.sprite = sprite;
+            image.preserveAspect = true;
+
+            return iconObj;
+        }
+
+        /// <summary>
+        /// Creates a TMP text label.
+        /// </summary>
+        public static UnityEngine.GameObject CreateLabel(
+            UnityEngine.Transform parent,
+            string text,
+            UnityEngine.Vector2 position,
+            UnityEngine.Vector2 size,
+            float fontSize,
+            UnityEngine.Color color,
+            Il2CppTMPro.TextAlignmentOptions alignment = Il2CppTMPro.TextAlignmentOptions.Left,
+            string name = "Label")
+        {
+            var (font, material) = GetFont(parent);
+            if (font == null) return null;
+
+            var labelObj = new UnityEngine.GameObject(name);
+            labelObj.transform.SetParent(parent, false);
+
+            var rect = labelObj.AddComponent<UnityEngine.RectTransform>();
+            rect.anchorMin = new UnityEngine.Vector2(0f, 0.5f);
+            rect.anchorMax = new UnityEngine.Vector2(0f, 0.5f);
+            rect.pivot = new UnityEngine.Vector2(0f, 0.5f);
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+
+            var tmp = labelObj.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+            tmp.font = font;
+            if (material != null) tmp.fontSharedMaterial = material;
+            tmp.text = text;
+            tmp.fontSize = fontSize;
+            tmp.color = color;
+            tmp.alignment = alignment;
+            tmp.overflowMode = Il2CppTMPro.TextOverflowModes.Overflow;
+            tmp.enableWordWrapping = false;
+            tmp.raycastTarget = false;
+
+            return labelObj;
+        }
+
+        /// <summary>
+        /// Adds hover event triggers to a GameObject.
+        /// </summary>
+        public static void AddHoverTrigger(
+            UnityEngine.GameObject obj,
+            System.Action onEnter,
+            System.Action onExit)
+        {
+            var eventTrigger = obj.AddComponent<UnityEngine.EventSystems.EventTrigger>();
+
+            var enterEntry = new UnityEngine.EventSystems.EventTrigger.Entry();
+            enterEntry.eventID = UnityEngine.EventSystems.EventTriggerType.PointerEnter;
+            enterEntry.callback.AddListener((UnityEngine.Events.UnityAction<UnityEngine.EventSystems.BaseEventData>)((data) => onEnter?.Invoke()));
+            eventTrigger.triggers.Add(enterEntry);
+
+            var exitEntry = new UnityEngine.EventSystems.EventTrigger.Entry();
+            exitEntry.eventID = UnityEngine.EventSystems.EventTriggerType.PointerExit;
+            exitEntry.callback.AddListener((UnityEngine.Events.UnityAction<UnityEngine.EventSystems.BaseEventData>)((data) => onExit?.Invoke()));
+            eventTrigger.triggers.Add(exitEntry);
+        }
+
+        /// <summary>
+        /// Creates a popup background with outline.
+        /// </summary>
+        public static UnityEngine.GameObject CreatePopupBase(
+            UnityEngine.Transform parent,
+            string name,
+            UnityEngine.Color bgColor,
+            UnityEngine.Color outlineColor,
+            float outlineWidth = 2f)
+        {
+            var popupObj = new UnityEngine.GameObject(name);
+            popupObj.transform.SetParent(parent, false);
+
+            var rect = popupObj.AddComponent<UnityEngine.RectTransform>();
+            rect.anchorMin = new UnityEngine.Vector2(0.5f, 0.5f);
+            rect.anchorMax = new UnityEngine.Vector2(0.5f, 0.5f);
+            rect.pivot = new UnityEngine.Vector2(0.5f, 0.5f);
+
+            var bgImage = popupObj.AddComponent<UnityEngine.UI.Image>();
+            bgImage.color = bgColor;
+            bgImage.raycastTarget = true;
+
+            var outline = popupObj.AddComponent<UnityEngine.UI.Outline>();
+            outline.effectColor = outlineColor;
+            outline.effectDistance = new UnityEngine.Vector2(outlineWidth, outlineWidth);
+
+            return popupObj;
+        }
+
+        /// <summary>
+        /// Adds a vertical layout group with content size fitter.
+        /// </summary>
+        public static void AddVerticalLayout(
+            UnityEngine.GameObject obj,
+            float padding,
+            float spacing)
+        {
+            var layout = obj.AddComponent<UnityEngine.UI.VerticalLayoutGroup>();
+            layout.padding = new UnityEngine.RectOffset((int)padding, (int)padding, (int)padding, (int)padding);
+            layout.spacing = spacing;
+            layout.childControlWidth = true;
+            layout.childControlHeight = true;
+            layout.childForceExpandWidth = false;
+            layout.childForceExpandHeight = false;
+
+            var fitter = obj.AddComponent<UnityEngine.UI.ContentSizeFitter>();
+            fitter.horizontalFit = UnityEngine.UI.ContentSizeFitter.FitMode.PreferredSize;
+            fitter.verticalFit = UnityEngine.UI.ContentSizeFitter.FitMode.PreferredSize;
+        }
+
+        /// <summary>
+        /// Adds a horizontal layout group.
+        /// </summary>
+        public static void AddHorizontalLayout(
+            UnityEngine.GameObject obj,
+            float spacing)
+        {
+            var layout = obj.AddComponent<UnityEngine.UI.HorizontalLayoutGroup>();
+            layout.spacing = spacing;
+            layout.childControlWidth = false;
+            layout.childControlHeight = false;
+            layout.childForceExpandWidth = false;
+            layout.childForceExpandHeight = false;
+        }
+
+        /// <summary>
+        /// Destroys an existing child by name if it exists.
+        /// </summary>
+        public static void CleanupChild(UnityEngine.Transform parent, string childName)
+        {
+            var existing = parent.Find(childName);
+            if (existing != null)
+                UnityEngine.Object.Destroy(existing.gameObject);
+        }
+
+        /// <summary>
+        /// Finds a parent transform by name, walking up the hierarchy.
+        /// </summary>
+        public static UnityEngine.Transform FindParentByName(UnityEngine.Transform start, string name)
+        {
+            var current = start;
+            while (current != null && current.name != name)
+            {
+                current = current.parent;
+            }
+            return current ?? start.root;
+        }
+
+        /// <summary>
+        /// Adds a layout element for size control in layout groups.
+        /// </summary>
+        public static void AddLayoutElement(UnityEngine.GameObject obj, float preferredWidth, float preferredHeight)
+        {
+            var layoutElement = obj.AddComponent<UnityEngine.UI.LayoutElement>();
+            layoutElement.preferredWidth = preferredWidth;
+            layoutElement.preferredHeight = preferredHeight;
+        }
+    }
+
+    /// <summary>
+    /// Data class representing an evolution formula (weapon + requirements -> evolved weapon).
+    /// </summary>
+    public class EvolutionFormula
+    {
+        public System.Collections.Generic.List<(UnityEngine.Sprite sprite, bool owned, string name)> Ingredients = new System.Collections.Generic.List<(UnityEngine.Sprite sprite, bool owned, string name)>();
+        public UnityEngine.Sprite ResultSprite;
+        public string ResultName;
+        public bool CanEvolve; // True if all requirements are met
+    }
+
+    /// <summary>
+    /// Data class representing arcana information.
+    /// </summary>
+    public class ArcanaInfo
+    {
+        public string Name;
+        public string Description;
+        public UnityEngine.Sprite Sprite;
+        public object ArcanaData; // Raw game data for further queries
+        public System.Collections.Generic.List<WeaponType> AffectedWeaponTypes = new System.Collections.Generic.List<WeaponType>();
+    }
+
+    /// <summary>
+    /// Context enum for different UI locations.
+    /// </summary>
+    public enum UIContext
+    {
+        LevelUp,
+        Merchant,
+        Pickup
+    }
+
+    /// <summary>
+    /// Unified evolution display system - one implementation for all windows.
+    /// </summary>
+    public static class EvolutionDisplay
+    {
+        // Single popup instance shared across all contexts
+        private static UnityEngine.GameObject currentPopup = null;
+
+        // Popup styling constants
+        private static readonly UnityEngine.Color PopupBgColor = new UnityEngine.Color(0.1f, 0.1f, 0.15f, 0.95f);
+        private static readonly UnityEngine.Color PopupOutlineColor = new UnityEngine.Color(0.4f, 0.6f, 0.9f, 1f);
+        private static readonly UnityEngine.Color OwnedHighlightColor = new UnityEngine.Color(0.2f, 0.8f, 0.2f, 1f);
+        private static readonly float IconSize = 24f;
+        private static readonly float Spacing = 4f;
+        private static readonly float Padding = 10f;
+
+        /// <summary>
+        /// Displays the evolution indicator ("evo: [N]") on a UI element.
+        /// Returns the created container for positioning by caller.
+        /// </summary>
+        public static UnityEngine.GameObject ShowIndicator(
+            UnityEngine.Transform parent,
+            System.Collections.Generic.List<EvolutionFormula> formulas,
+            UIContext context,
+            System.Action<UnityEngine.Transform> onShowPopup)
+        {
+            string containerName = "EvoIndicator_Unified";
+            UIHelper.CleanupChild(parent, containerName);
+
+            if (formulas == null || formulas.Count == 0) return null;
+
+            // Create container
+            var containerObj = new UnityEngine.GameObject(containerName);
+            containerObj.transform.SetParent(parent, false);
+
+            var containerRect = containerObj.AddComponent<UnityEngine.RectTransform>();
+
+            // Position based on context
+            switch (context)
+            {
+                case UIContext.LevelUp:
+                    containerRect.anchorMin = new UnityEngine.Vector2(0f, 0f);
+                    containerRect.anchorMax = new UnityEngine.Vector2(0f, 0f);
+                    containerRect.pivot = new UnityEngine.Vector2(0f, 0f);
+                    containerRect.anchoredPosition = new UnityEngine.Vector2(10f, 10f);
+                    break;
+                case UIContext.Merchant:
+                    containerRect.anchorMin = new UnityEngine.Vector2(0.5f, 1f);
+                    containerRect.anchorMax = new UnityEngine.Vector2(0.5f, 1f);
+                    containerRect.pivot = new UnityEngine.Vector2(0f, 1f);
+                    containerRect.anchoredPosition = new UnityEngine.Vector2(0f, -35f);
+                    break;
+                case UIContext.Pickup:
+                    containerRect.anchorMin = new UnityEngine.Vector2(0f, 0f);
+                    containerRect.anchorMax = new UnityEngine.Vector2(0f, 0f);
+                    containerRect.pivot = new UnityEngine.Vector2(0f, 0f);
+                    containerRect.anchoredPosition = new UnityEngine.Vector2(5f, 5f);
+                    break;
+            }
+            containerRect.sizeDelta = new UnityEngine.Vector2(300f, 28f);
+
+            float xPos = 0f;
+
+            // Create "evo:" label
+            var labelObj = UIHelper.CreateLabel(
+                containerObj.transform,
+                "evo:",
+                new UnityEngine.Vector2(xPos, 0f),
+                new UnityEngine.Vector2(50f, 24f),
+                18f,
+                UnityEngine.Color.white,
+                Il2CppTMPro.TextAlignmentOptions.Left,
+                "EvoLabel");
+            xPos += 60f;
+
+            // Create hover icon with formula count
+            var iconObj = new UnityEngine.GameObject("EvoIcon");
+            iconObj.transform.SetParent(containerObj.transform, false);
+
+            var iconRect = iconObj.AddComponent<UnityEngine.RectTransform>();
+            iconRect.anchorMin = new UnityEngine.Vector2(0f, 0.5f);
+            iconRect.anchorMax = new UnityEngine.Vector2(0f, 0.5f);
+            iconRect.pivot = new UnityEngine.Vector2(0f, 0.5f);
+            iconRect.anchoredPosition = new UnityEngine.Vector2(xPos, 0f);
+            iconRect.sizeDelta = new UnityEngine.Vector2(24f, 24f);
+
+            var bgImage = iconObj.AddComponent<UnityEngine.UI.Image>();
+            bgImage.color = new UnityEngine.Color(0.2f, 0.5f, 0.9f, 0.9f);
+            bgImage.raycastTarget = true;
+
+            // Add count text
+            var (font, material) = UIHelper.GetFont(parent);
+            if (font != null)
+            {
+                var textObj = new UnityEngine.GameObject("Count");
+                textObj.transform.SetParent(iconObj.transform, false);
+                var textRect = textObj.AddComponent<UnityEngine.RectTransform>();
+                textRect.anchorMin = UnityEngine.Vector2.zero;
+                textRect.anchorMax = UnityEngine.Vector2.one;
+                textRect.offsetMin = UnityEngine.Vector2.zero;
+                textRect.offsetMax = UnityEngine.Vector2.zero;
+
+                var tmp = textObj.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                tmp.font = font;
+                tmp.text = formulas.Count.ToString();
+                tmp.fontSize = 18f;
+                tmp.color = UnityEngine.Color.white;
+                tmp.alignment = Il2CppTMPro.TextAlignmentOptions.Center;
+                tmp.raycastTarget = false;
+            }
+
+            // Add hover trigger
+            UIHelper.AddHoverTrigger(iconObj,
+                () => onShowPopup?.Invoke(iconObj.transform),
+                () => HidePopup());
+
+            return containerObj;
+        }
+
+        /// <summary>
+        /// Shows the evolution popup with all formulas.
+        /// </summary>
+        public static void ShowPopup(
+            UnityEngine.Transform anchor,
+            System.Collections.Generic.List<EvolutionFormula> formulas,
+            UIContext context)
+        {
+            HidePopup();
+
+            if (formulas == null || formulas.Count == 0) return;
+
+            // Find appropriate parent for popup (to avoid clipping)
+            string parentName = context == UIContext.Merchant ? "View - Merchant" : "View - Level Up";
+            var popupParent = UIHelper.FindParentByName(anchor, parentName);
+
+            // Create popup
+            currentPopup = UIHelper.CreatePopupBase(popupParent, "EvoPopup_Unified", PopupBgColor, PopupOutlineColor);
+            UIHelper.AddVerticalLayout(currentPopup, Padding, Spacing);
+
+            // Add title
+            var titleRow = new UnityEngine.GameObject("TitleRow");
+            titleRow.transform.SetParent(currentPopup.transform, false);
+            UIHelper.AddLayoutElement(titleRow, 200f, 20f);
+
+            var (font, material) = UIHelper.GetFont(anchor);
+            if (font != null)
+            {
+                var titleTmp = titleRow.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                titleTmp.font = font;
+                titleTmp.text = "Evolution Paths";
+                titleTmp.fontSize = 16f;
+                titleTmp.color = new UnityEngine.Color(1f, 0.85f, 0.4f, 1f); // Gold
+                titleTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Center;
+            }
+
+            // Add each formula row (limit to 4, show "+N more" if needed)
+            int maxShow = System.Math.Min(formulas.Count, 4);
+            for (int i = 0; i < maxShow; i++)
+            {
+                CreateFormulaRow(currentPopup.transform, formulas[i], font, material);
+            }
+
+            if (formulas.Count > 4)
+            {
+                var moreRow = new UnityEngine.GameObject("MoreRow");
+                moreRow.transform.SetParent(currentPopup.transform, false);
+                UIHelper.AddLayoutElement(moreRow, 200f, 18f);
+
+                if (font != null)
+                {
+                    var moreTmp = moreRow.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                    moreTmp.font = font;
+                    moreTmp.text = $"+{formulas.Count - 4} more...";
+                    moreTmp.fontSize = 14f;
+                    moreTmp.color = new UnityEngine.Color(0.7f, 0.7f, 0.7f, 1f);
+                    moreTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Center;
+                }
+            }
+
+            // Position popup near anchor
+            PositionPopup(currentPopup, anchor, context);
+        }
+
+        /// <summary>
+        /// Creates a single formula row: [icon] + [icon] → [result]
+        /// </summary>
+        private static void CreateFormulaRow(
+            UnityEngine.Transform parent,
+            EvolutionFormula formula,
+            Il2CppTMPro.TMP_FontAsset font,
+            UnityEngine.Material fontMaterial)
+        {
+            var rowObj = new UnityEngine.GameObject("FormulaRow");
+            rowObj.transform.SetParent(parent, false);
+            UIHelper.AddHorizontalLayout(rowObj, 3f);
+
+            // Calculate row width
+            float rowWidth = 0f;
+            foreach (var ing in formula.Ingredients)
+            {
+                rowWidth += IconSize + 3f; // icon + spacing
+                if (formula.Ingredients.IndexOf(ing) < formula.Ingredients.Count - 1)
+                    rowWidth += 15f; // "+" text width
+            }
+            rowWidth += 20f + IconSize; // arrow + result icon
+
+            UIHelper.AddLayoutElement(rowObj, rowWidth, IconSize);
+
+            // Add ingredients with "+" between them
+            for (int i = 0; i < formula.Ingredients.Count; i++)
+            {
+                var ing = formula.Ingredients[i];
+
+                // Create icon
+                var iconObj = new UnityEngine.GameObject($"Ingredient_{i}");
+                iconObj.transform.SetParent(rowObj.transform, false);
+
+                var iconImage = iconObj.AddComponent<UnityEngine.UI.Image>();
+                iconImage.sprite = ing.sprite;
+                iconImage.preserveAspect = true;
+
+                UIHelper.AddLayoutElement(iconObj, IconSize, IconSize);
+
+                // Add green highlight if owned
+                if (ing.owned)
+                {
+                    var outline = iconObj.AddComponent<UnityEngine.UI.Outline>();
+                    outline.effectColor = OwnedHighlightColor;
+                    outline.effectDistance = new UnityEngine.Vector2(2f, 2f);
+                }
+
+                // Add "+" if not last ingredient
+                if (i < formula.Ingredients.Count - 1 && font != null)
+                {
+                    var plusObj = new UnityEngine.GameObject("Plus");
+                    plusObj.transform.SetParent(rowObj.transform, false);
+                    UIHelper.AddLayoutElement(plusObj, 15f, IconSize);
+
+                    var plusTmp = plusObj.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                    plusTmp.font = font;
+                    plusTmp.text = "+";
+                    plusTmp.fontSize = 16f;
+                    plusTmp.color = UnityEngine.Color.white;
+                    plusTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Center;
+                }
+            }
+
+            // Add arrow
+            if (font != null)
+            {
+                var arrowObj = new UnityEngine.GameObject("Arrow");
+                arrowObj.transform.SetParent(rowObj.transform, false);
+                UIHelper.AddLayoutElement(arrowObj, 20f, IconSize);
+
+                var arrowTmp = arrowObj.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                arrowTmp.font = font;
+                arrowTmp.text = "→";
+                arrowTmp.fontSize = 16f;
+                arrowTmp.color = UnityEngine.Color.white;
+                arrowTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Center;
+            }
+
+            // Add result icon
+            var resultObj = new UnityEngine.GameObject("Result");
+            resultObj.transform.SetParent(rowObj.transform, false);
+
+            var resultImage = resultObj.AddComponent<UnityEngine.UI.Image>();
+            resultImage.sprite = formula.ResultSprite;
+            resultImage.preserveAspect = true;
+
+            UIHelper.AddLayoutElement(resultObj, IconSize, IconSize);
+        }
+
+        /// <summary>
+        /// Positions the popup relative to anchor based on context.
+        /// </summary>
+        private static void PositionPopup(UnityEngine.GameObject popup, UnityEngine.Transform anchor, UIContext context)
+        {
+            var popupRect = popup.GetComponent<UnityEngine.RectTransform>();
+            var popupParent = popup.transform.parent;
+
+            if (popupParent != null)
+            {
+                // Convert anchor world position to popup parent's local space
+                var localPos = popupParent.InverseTransformPoint(anchor.position);
+
+                // Offset based on context
+                float xOffset = 30f;
+                float yOffset = 0f;
+                switch (context)
+                {
+                    case UIContext.Merchant:
+                        xOffset = 60f;
+                        break;
+                    default:
+                        xOffset = 30f;
+                        break;
+                }
+
+                popupRect.anchoredPosition = new UnityEngine.Vector2(localPos.x + xOffset, localPos.y + yOffset);
+            }
+        }
+
+        /// <summary>
+        /// Hides the current popup.
+        /// </summary>
+        public static void HidePopup()
+        {
+            if (currentPopup != null)
+            {
+                UnityEngine.Object.Destroy(currentPopup);
+                currentPopup = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Unified arcana display system - one implementation for all windows.
+    /// </summary>
+    public static class ArcanaDisplay
+    {
+        // Single popup instance
+        private static UnityEngine.GameObject currentPopup = null;
+
+        // Styling constants
+        private static readonly UnityEngine.Color PopupBgColor = new UnityEngine.Color(0.15f, 0.1f, 0.2f, 0.95f);
+        private static readonly UnityEngine.Color PopupOutlineColor = new UnityEngine.Color(0.8f, 0.5f, 0.9f, 1f);
+        private static readonly float IconSize = 20f;
+
+        /// <summary>
+        /// Displays the arcana indicator ("arcana:" + icon) on a UI element.
+        /// Call after EvolutionDisplay.ShowIndicator to position correctly.
+        /// </summary>
+        public static UnityEngine.GameObject ShowIndicator(
+            UnityEngine.Transform parent,
+            ArcanaInfo arcana,
+            UIContext context,
+            float xOffset, // Where to start (after evo indicator)
+            System.Action<UnityEngine.Transform> onShowPopup)
+        {
+            string containerName = "ArcanaIndicator_Unified";
+            UIHelper.CleanupChild(parent, containerName);
+
+            if (arcana == null || arcana.Sprite == null) return null;
+
+            // For merchant, add to the evo container if it exists
+            var evoContainer = parent.Find("EvoIndicator_Unified");
+            var targetParent = evoContainer != null ? evoContainer : parent;
+
+            // Create "arcana:" label
+            var labelObj = UIHelper.CreateLabel(
+                targetParent,
+                "arcana:",
+                new UnityEngine.Vector2(xOffset, 0f),
+                new UnityEngine.Vector2(60f, 24f),
+                18f,
+                UnityEngine.Color.white,
+                Il2CppTMPro.TextAlignmentOptions.Left,
+                "ArcanaLabel");
+
+            xOffset += 65f;
+
+            // Create arcana icon
+            var iconObj = UIHelper.CreateIcon(
+                targetParent,
+                arcana.Sprite,
+                new UnityEngine.Vector2(xOffset, 0f),
+                IconSize,
+                containerName);
+
+            var iconImage = iconObj.GetComponent<UnityEngine.UI.Image>();
+            iconImage.raycastTarget = true;
+
+            // Add hover trigger
+            UIHelper.AddHoverTrigger(iconObj,
+                () => onShowPopup?.Invoke(iconObj.transform),
+                () => HidePopup());
+
+            return iconObj;
+        }
+
+        /// <summary>
+        /// Shows the arcana popup with details.
+        /// </summary>
+        public static void ShowPopup(
+            UnityEngine.Transform anchor,
+            ArcanaInfo arcana,
+            object weaponsDict,
+            object powerUpsDict,
+            UIContext context)
+        {
+            HidePopup();
+
+            if (arcana == null) return;
+
+            // Find appropriate parent
+            string parentName = context == UIContext.Merchant ? "View - Merchant" : "View - Level Up";
+            var popupParent = UIHelper.FindParentByName(anchor, parentName);
+
+            // Create popup
+            currentPopup = UIHelper.CreatePopupBase(popupParent, "ArcanaPopup_Unified", PopupBgColor, PopupOutlineColor);
+            UIHelper.AddVerticalLayout(currentPopup, 10f, 5f);
+
+            var (font, material) = UIHelper.GetFont(anchor);
+
+            // Title row with icon and name
+            var titleRow = new UnityEngine.GameObject("TitleRow");
+            titleRow.transform.SetParent(currentPopup.transform, false);
+            UIHelper.AddHorizontalLayout(titleRow, 8f);
+            UIHelper.AddLayoutElement(titleRow, 250f, 28f);
+
+            // Arcana icon in title
+            var titleIcon = new UnityEngine.GameObject("TitleIcon");
+            titleIcon.transform.SetParent(titleRow.transform, false);
+            var titleIconImage = titleIcon.AddComponent<UnityEngine.UI.Image>();
+            titleIconImage.sprite = arcana.Sprite;
+            titleIconImage.preserveAspect = true;
+            UIHelper.AddLayoutElement(titleIcon, 24f, 24f);
+
+            // Arcana name
+            if (font != null)
+            {
+                var nameObj = new UnityEngine.GameObject("Name");
+                nameObj.transform.SetParent(titleRow.transform, false);
+                UIHelper.AddLayoutElement(nameObj, 200f, 24f);
+
+                var nameTmp = nameObj.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                nameTmp.font = font;
+                nameTmp.text = arcana.Name;
+                nameTmp.fontSize = 18f;
+                nameTmp.color = new UnityEngine.Color(0.9f, 0.7f, 1f, 1f); // Purple tint
+                nameTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Left;
+            }
+
+            // Description
+            if (font != null && !string.IsNullOrEmpty(arcana.Description))
+            {
+                var descObj = new UnityEngine.GameObject("Description");
+                descObj.transform.SetParent(currentPopup.transform, false);
+                UIHelper.AddLayoutElement(descObj, 250f, 40f);
+
+                var descTmp = descObj.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                descTmp.font = font;
+                descTmp.text = arcana.Description;
+                descTmp.fontSize = 12f;
+                descTmp.color = new UnityEngine.Color(0.8f, 0.8f, 0.8f, 1f);
+                descTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Left;
+                descTmp.enableWordWrapping = true;
+            }
+
+            // Affected weapons section
+            if (arcana.AffectedWeaponTypes.Count > 0)
+            {
+                // "Affects:" label
+                if (font != null)
+                {
+                    var affectsLabel = new UnityEngine.GameObject("AffectsLabel");
+                    affectsLabel.transform.SetParent(currentPopup.transform, false);
+                    UIHelper.AddLayoutElement(affectsLabel, 250f, 18f);
+
+                    var affectsTmp = affectsLabel.AddComponent<Il2CppTMPro.TextMeshProUGUI>();
+                    affectsTmp.font = font;
+                    affectsTmp.text = "Affects:";
+                    affectsTmp.fontSize = 14f;
+                    affectsTmp.color = new UnityEngine.Color(1f, 0.85f, 0.4f, 1f); // Gold
+                    affectsTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Left;
+                }
+
+                // Weapon icons row
+                var iconsRow = new UnityEngine.GameObject("IconsRow");
+                iconsRow.transform.SetParent(currentPopup.transform, false);
+                UIHelper.AddHorizontalLayout(iconsRow, 4f);
+
+                int iconsWidth = System.Math.Min(arcana.AffectedWeaponTypes.Count, 8) * ((int)IconSize + 4);
+                UIHelper.AddLayoutElement(iconsRow, iconsWidth, IconSize);
+
+                // Add weapon icons (max 8)
+                int shown = 0;
+                foreach (var weaponType in arcana.AffectedWeaponTypes)
+                {
+                    if (shown >= 8) break;
+
+                    var sprite = LoadWeaponSprite(weaponType, weaponsDict, powerUpsDict);
+                    if (sprite != null)
+                    {
+                        var wepIcon = new UnityEngine.GameObject($"Weapon_{shown}");
+                        wepIcon.transform.SetParent(iconsRow.transform, false);
+
+                        var wepImage = wepIcon.AddComponent<UnityEngine.UI.Image>();
+                        wepImage.sprite = sprite;
+                        wepImage.preserveAspect = true;
+
+                        UIHelper.AddLayoutElement(wepIcon, IconSize, IconSize);
+                        shown++;
+                    }
+                }
+            }
+
+            // Position popup
+            PositionPopup(currentPopup, anchor, context);
+        }
+
+        private static void PositionPopup(UnityEngine.GameObject popup, UnityEngine.Transform anchor, UIContext context)
+        {
+            var popupRect = popup.GetComponent<UnityEngine.RectTransform>();
+            var popupParent = popup.transform.parent;
+
+            if (popupParent != null)
+            {
+                // Convert anchor world position to popup parent's local space
+                var localPos = popupParent.InverseTransformPoint(anchor.position);
+                popupRect.anchoredPosition = new UnityEngine.Vector2(localPos.x + 60f, localPos.y);
+            }
+        }
+
+        /// <summary>
+        /// Hides the current popup.
+        /// </summary>
+        public static void HidePopup()
+        {
+            if (currentPopup != null)
+            {
+                UnityEngine.Object.Destroy(currentPopup);
+                currentPopup = null;
+            }
+        }
+
+        // Helper to load weapon sprite (reuse existing logic)
+        private static UnityEngine.Sprite LoadWeaponSprite(WeaponType weaponType, object weaponsDict, object powerUpsDict)
+        {
+            // This will be filled in by referencing existing sprite loading code
+            // For now, return null - we'll wire this up when migrating
+            return null;
+        }
+    }
+
+    #endregion
+
     [HarmonyPatch(typeof(LevelUpItemUI), "SetWeaponData")]
     public class LevelUpItemUI_SetWeaponData_Patch
     {
