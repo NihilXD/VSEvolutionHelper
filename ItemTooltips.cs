@@ -74,6 +74,12 @@ namespace VSItemTooltips
             new Dictionary<int, (HashSet<WeaponType>, HashSet<ItemType>)>();
         private static Dictionary<string, int> arcanaNameToInt = new Dictionary<string, int>();
 
+        // Collection screen hover tracking (no EventTriggers - uses per-frame raycast)
+        private static Dictionary<int, (UnityEngine.GameObject go, WeaponType? weapon, ItemType? item, object arcanaType)> collectionIcons =
+            new Dictionary<int, (UnityEngine.GameObject, WeaponType?, ItemType?, object)>();
+        private static int currentCollectionHoverId = -1;
+        private static UnityEngine.GameObject collectionPopup = null;
+
         // Styling
         private static readonly UnityEngine.Color PopupBgColor = new UnityEngine.Color(0.08f, 0.08f, 0.12f, 0.98f);
         private static readonly UnityEngine.Color PopupBorderColor = new UnityEngine.Color(0.5f, 0.5f, 0.7f, 1f);
@@ -187,6 +193,20 @@ namespace VSItemTooltips
             {
                 MelonLogger.Msg("Searching for equipment icon types...");
 
+                // Discover ArcanaType enum early so we can patch arcana methods
+                System.Type arcanaTypeEnum = null;
+                try
+                {
+                    var gameAssembly = typeof(WeaponData).Assembly;
+                    arcanaTypeEnum = gameAssembly.GetTypes().FirstOrDefault(t => t.Name == "ArcanaType");
+                    if (arcanaTypeEnum != null)
+                    {
+                        cachedArcanaTypeEnum = arcanaTypeEnum;
+                        MelonLogger.Msg($"Discovered ArcanaType enum: {arcanaTypeEnum.FullName}");
+                    }
+                }
+                catch { }
+
                 // Search ALL types that might be icon/equipment related
                 foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
                 {
@@ -209,11 +229,12 @@ namespace VSItemTooltips
                             // Log all found types
                             MelonLogger.Msg($"Found type: {iconType.FullName}");
 
-                            // Look for methods that take WeaponType or ItemType
+                            // Look for methods that take WeaponType, ItemType, or ArcanaType
                             var interestingMethods = iconType.GetMethods(BindingFlags.Public | BindingFlags.Instance)
                                 .Where(m => m.GetParameters().Any(p =>
                                     p.ParameterType == typeof(WeaponType) ||
                                     p.ParameterType == typeof(ItemType) ||
+                                    (arcanaTypeEnum != null && p.ParameterType == arcanaTypeEnum) ||
                                     p.ParameterType.Name.Contains("Weapon") ||
                                     p.ParameterType.Name.Contains("Item")))
                                 .Take(5);
@@ -229,10 +250,11 @@ namespace VSItemTooltips
                                 {
                                     try
                                     {
-                                        // Find which parameter is WeaponType or ItemType
+                                        // Find which parameter is WeaponType, ItemType, or ArcanaType
                                         var allParams = m.GetParameters();
                                         int weaponParamIndex = -1;
                                         int itemParamIndex = -1;
+                                        int arcanaParamIndex = -1;
 
                                         for (int pi = 0; pi < allParams.Length; pi++)
                                         {
@@ -240,6 +262,8 @@ namespace VSItemTooltips
                                                 weaponParamIndex = pi;
                                             else if (allParams[pi].ParameterType == typeof(ItemType))
                                                 itemParamIndex = pi;
+                                            else if (arcanaTypeEnum != null && allParams[pi].ParameterType == arcanaTypeEnum)
+                                                arcanaParamIndex = pi;
                                         }
 
                                         if (weaponParamIndex >= 0)
@@ -270,6 +294,12 @@ namespace VSItemTooltips
                                             harmonyInstance.Patch(m,
                                                 postfix: new HarmonyMethod(typeof(GenericIconPatches), patchMethod));
                                             MelonLogger.Msg($"  PATCHED: {iconType.Name}.{m.Name} (item, param {itemParamIndex})");
+                                        }
+                                        else if (arcanaParamIndex >= 0)
+                                        {
+                                            harmonyInstance.Patch(m,
+                                                postfix: new HarmonyMethod(typeof(GenericIconPatches), nameof(GenericIconPatches.SetArcana_Postfix_ArgN)));
+                                            MelonLogger.Msg($"  PATCHED: {iconType.Name}.{m.Name} (arcana, param {arcanaParamIndex})");
                                         }
                                     }
                                     catch (Exception patchEx)
@@ -347,27 +377,33 @@ namespace VSItemTooltips
                 MelonLogger.Msg("Attempting early DataManager caching...");
 
                 // Method 1: Try FindObjectOfType for DataManager directly
-                var dataManagerType = System.AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
-                    .FirstOrDefault(t => t.Name == "DataManager" && t.Namespace != null && t.Namespace.Contains("VampireSurvivors"));
-
-                if (dataManagerType != null)
+                try
                 {
-                    MelonLogger.Msg($"Found DataManager type: {dataManagerType.FullName}");
+                    var dataManagerType = System.AppDomain.CurrentDomain.GetAssemblies()
+                        .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
+                        .FirstOrDefault(t => t.Name == "DataManager" && t.Namespace != null && t.Namespace.Contains("VampireSurvivors"));
 
-                    // Try to find via Unity's FindObjectOfType
-                    var findMethod = typeof(UnityEngine.Object).GetMethod("FindObjectOfType", new System.Type[0]);
-                    if (findMethod != null)
+                    if (dataManagerType != null)
                     {
-                        var genericMethod = findMethod.MakeGenericMethod(dataManagerType);
-                        var dm = genericMethod.Invoke(null, null);
-                        if (dm != null)
+                        MelonLogger.Msg($"Found DataManager type: {dataManagerType.FullName}");
+
+                        var findMethod = typeof(UnityEngine.Object).GetMethod("FindObjectOfType", new System.Type[0]);
+                        if (findMethod != null)
                         {
-                            MelonLogger.Msg($"Found DataManager via FindObjectOfType!");
-                            CacheDataManager(dm);
-                            return;
+                            var genericMethod = findMethod.MakeGenericMethod(dataManagerType);
+                            var dm = genericMethod.Invoke(null, null);
+                            if (dm != null)
+                            {
+                                MelonLogger.Msg($"Found DataManager via FindObjectOfType!");
+                                CacheDataManager(dm);
+                                return;
+                            }
                         }
                     }
+                }
+                catch (Exception ex1)
+                {
+                    MelonLogger.Msg($"Method 1 (FindObjectOfType) failed: {ex1.Message}");
                 }
 
                 // Method 2: Try GameManager.Instance.Data
@@ -514,9 +550,11 @@ namespace VSItemTooltips
 
             bool isGamePaused = IsGamePaused();
 
-            // State change: became paused
+            // State change: became paused (entering game clears collection icons)
             if (isGamePaused && !wasGamePaused)
             {
+                collectionIcons.Clear();
+                HideCollectionPopup();
                 // Log which views triggered the pause
                 var activeViewNames = new System.Collections.Generic.List<string>();
                 if (levelUpView != null && levelUpView.activeInHierarchy) activeViewNames.Add("LevelUp");
@@ -578,6 +616,12 @@ namespace VSItemTooltips
             }
 
             wasGamePaused = isGamePaused;
+
+            // Collection screen hover detection (runs even when not in-game)
+            if (!isGamePaused && collectionIcons.Count > 0)
+            {
+                UpdateCollectionHover();
+            }
 
             // Only process when game is paused
             if (!isGamePaused) return;
@@ -740,8 +784,9 @@ namespace VSItemTooltips
                     MelonLogger.Msg("Arcana view detected as active!");
             }
 
-            // Also check time scale as fallback
-            if (!isPaused && UnityEngine.Time.timeScale == 0f)
+            // Also check time scale as fallback, but ONLY if we're in an actual game run
+            // (prevents activating on main menu / Collection screen where timeScale may also be 0)
+            if (!isPaused && inGameUIFound && UnityEngine.Time.timeScale == 0f)
             {
                 // Log once when we detect pause via timeScale
                 if (!wasGamePaused)
@@ -1847,6 +1892,86 @@ namespace VSItemTooltips
             return cachedDataManager != null;
         }
 
+        // Static version of data manager caching for use outside OnUpdate
+        private static void TryCacheDataManagerStatic()
+        {
+            if (cachedDataManager != null) return;
+
+            try
+            {
+                // Try GameManager.Instance.Data
+                var gameManagerType = System.AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
+                    .FirstOrDefault(t => t.Name == "GameManager");
+
+                if (gameManagerType != null)
+                {
+                    object instance = null;
+                    var allStaticMembers = gameManagerType.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    foreach (var member in allStaticMembers)
+                    {
+                        try
+                        {
+                            if (member is PropertyInfo prop && prop.PropertyType == gameManagerType)
+                            {
+                                instance = prop.GetValue(null);
+                                if (instance != null) break;
+                            }
+                            else if (member is FieldInfo field && field.FieldType == gameManagerType)
+                            {
+                                instance = field.GetValue(null);
+                                if (instance != null) break;
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (instance != null)
+                    {
+                        var allProps = instance.GetType().GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        foreach (var prop in allProps)
+                        {
+                            if (prop.Name == "Data" || prop.PropertyType.Name.Contains("DataManager"))
+                            {
+                                try
+                                {
+                                    var val = prop.GetValue(instance);
+                                    if (val != null)
+                                    {
+                                        MelonLogger.Msg($"[Collection] Found DataManager via GameManager.{prop.Name}");
+                                        CacheDataManager(val);
+                                        return;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: search MonoBehaviours
+                var allBehaviours = UnityEngine.Object.FindObjectsOfType<UnityEngine.MonoBehaviour>();
+                for (int i = 0; i < allBehaviours.Count && i < 200; i++)
+                {
+                    var mb = allBehaviours[i];
+                    if (mb == null) continue;
+                    var getWeaponsMethod = mb.GetType().GetMethod("GetConvertedWeapons");
+                    if (getWeaponsMethod != null)
+                    {
+                        MelonLogger.Msg($"[Collection] Found DataManager via MonoBehaviour: {mb.GetType().Name}");
+                        CacheDataManager(mb);
+                        return;
+                    }
+                }
+
+                MelonLogger.Msg("[Collection] DataManager not found - popup will show Unknown");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[Collection] Data caching failed: {ex.Message}");
+            }
+        }
+
         public static void CacheDataManager(object dataManager)
         {
             if (dataManager == null) return;
@@ -1903,9 +2028,17 @@ namespace VSItemTooltips
         {
             MelonLogger.Msg($"[ShowItemPopup] Called with weapon={weaponType}, item={itemType}");
 
-            // Only show popups when game is paused
+            // If not in-game, route to collection popup system (for Collection screen clicks)
             if (!IsGamePaused())
             {
+                if (collectionIcons.Count > 0 && (weaponType.HasValue || itemType.HasValue))
+                {
+                    // Clicked a formula icon inside a collection popup - show new collection popup
+                    currentCollectionHoverId = -1; // Reset so it doesn't conflict
+                    pendingCollectionHoverId = -1;
+                    ShowCollectionPopup(weaponType, itemType);
+                    return;
+                }
                 HideAllPopups();
                 return;
             }
@@ -2025,7 +2158,7 @@ namespace VSItemTooltips
                 titleRow.transform.SetParent(popup.transform, false);
                 var titleRect = titleRow.AddComponent<UnityEngine.RectTransform>();
                 titleRect.anchorMin = new UnityEngine.Vector2(0f, 1f);
-                titleRect.anchorMax = new UnityEngine.Vector2(1f, 1f);
+                titleRect.anchorMax = new UnityEngine.Vector2(0f, 1f);
                 titleRect.pivot = new UnityEngine.Vector2(0f, 1f);
                 titleRect.anchoredPosition = new UnityEngine.Vector2(Padding, yOffset);
                 titleRect.sizeDelta = new UnityEngine.Vector2(maxWidth - Padding * 2, IconSize);
@@ -2046,6 +2179,10 @@ namespace VSItemTooltips
                 titleTmp.fontStyle = Il2CppTMPro.FontStyles.Bold;
                 titleTmp.color = UnityEngine.Color.white;
                 titleTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Left;
+                titleTmp.enableAutoSizing = true;
+                titleTmp.fontSizeMin = 12f;
+                titleTmp.fontSizeMax = 20f;
+                titleTmp.overflowMode = Il2CppTMPro.TextOverflowModes.Ellipsis;
 
                 // Add item icon to the left of the title
                 if (itemSprite != null)
@@ -3090,7 +3227,7 @@ namespace VSItemTooltips
                 titleRow.transform.SetParent(popup.transform, false);
                 var titleRect = titleRow.AddComponent<UnityEngine.RectTransform>();
                 titleRect.anchorMin = new UnityEngine.Vector2(0f, 1f);
-                titleRect.anchorMax = new UnityEngine.Vector2(1f, 1f);
+                titleRect.anchorMax = new UnityEngine.Vector2(0f, 1f);
                 titleRect.pivot = new UnityEngine.Vector2(0f, 1f);
                 titleRect.anchoredPosition = new UnityEngine.Vector2(Padding, yOffset);
                 titleRect.sizeDelta = new UnityEngine.Vector2(maxWidth - Padding * 2, IconSize);
@@ -3110,6 +3247,10 @@ namespace VSItemTooltips
                 titleTmp.fontStyle = Il2CppTMPro.FontStyles.Bold;
                 titleTmp.color = new UnityEngine.Color(0.8f, 0.7f, 0.95f, 1f); // Purple-ish for arcana
                 titleTmp.alignment = Il2CppTMPro.TextAlignmentOptions.Left;
+                titleTmp.enableAutoSizing = true;
+                titleTmp.fontSizeMin = 12f;
+                titleTmp.fontSizeMax = 20f;
+                titleTmp.overflowMode = Il2CppTMPro.TextOverflowModes.Ellipsis;
 
                 // Arcana icon
                 if (arcanaSprite != null)
@@ -3166,9 +3307,32 @@ namespace VSItemTooltips
                     yOffset -= descHeight + Spacing;
                 }
 
+                // Dump all properties/fields on arcana data to find additional lists
+                try
+                {
+                    var allProps = arcanaData.GetType().GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    foreach (var p in allProps)
+                    {
+                        try
+                        {
+                            var val = p.GetValue(arcanaData);
+                            var countP = val?.GetType()?.GetProperty("Count");
+                            string extra = countP != null ? $" (Count={countP.GetValue(val)})" : "";
+                            MelonLogger.Msg($"[ArcanaData] Property: {p.Name} = {val}{extra} [{p.PropertyType.Name}]");
+                        }
+                        catch { MelonLogger.Msg($"[ArcanaData] Property: {p.Name} [error reading]"); }
+                    }
+                }
+                catch { }
+
                 // "Affects:" section with grid of all affected items
                 var affectedWeapons = GetAllArcanaAffectedWeaponTypes(arcanaData);
                 var affectedItems = GetAllArcanaAffectedItemTypes(arcanaData);
+                MelonLogger.Msg($"[ArcanaPopup] '{arcanaName}' affects {affectedWeapons.Count} weapons, {affectedItems.Count} items");
+                if (affectedWeapons.Count > 0)
+                    MelonLogger.Msg($"[ArcanaPopup] Weapons: {string.Join(", ", affectedWeapons)}");
+                if (affectedItems.Count > 0)
+                    MelonLogger.Msg($"[ArcanaPopup] Items: {string.Join(", ", affectedItems)}");
 
                 int totalAffected = affectedWeapons.Count + affectedItems.Count;
                 if (totalAffected > 0)
@@ -3470,11 +3634,193 @@ namespace VSItemTooltips
             }
         }
 
+        #region Collection Screen Hover
+
+        private static float collectionHoverStartTime = 0f;
+        private static readonly float CollectionHoverDelay = 1.0f; // 1 second before showing new popup
+        private static int pendingCollectionHoverId = -1; // Icon waiting for delay to elapse
+        private static WeaponType? pendingCollectionWeapon = null;
+        private static ItemType? pendingCollectionItem = null;
+        private static object pendingCollectionArcana = null;
+
+        private static void UpdateCollectionHover()
+        {
+            // Clean up destroyed icons
+            var toRemove = new System.Collections.Generic.List<int>();
+            foreach (var kvp in collectionIcons)
+            {
+                if (kvp.Value.go == null)
+                    toRemove.Add(kvp.Key);
+            }
+            foreach (var key in toRemove)
+                collectionIcons.Remove(key);
+
+            // Find which icon the mouse is over
+            var mousePos = UnityEngine.Input.mousePosition;
+            int hoveredId = -1;
+            WeaponType? hoveredWeapon = null;
+            ItemType? hoveredItem = null;
+            object hoveredArcana = null;
+
+            foreach (var kvp in collectionIcons)
+            {
+                var go = kvp.Value.go;
+                if (go == null || !go.activeInHierarchy) continue;
+
+                var rectTransform = go.GetComponent<UnityEngine.RectTransform>();
+                if (rectTransform == null) continue;
+
+                if (UnityEngine.RectTransformUtility.RectangleContainsScreenPoint(rectTransform, mousePos, null) ||
+                    UnityEngine.RectTransformUtility.RectangleContainsScreenPoint(rectTransform, mousePos, UnityEngine.Camera.main))
+                {
+                    hoveredId = kvp.Key;
+                    hoveredWeapon = kvp.Value.weapon;
+                    hoveredItem = kvp.Value.item;
+                    hoveredArcana = kvp.Value.arcanaType;
+                    break;
+                }
+            }
+
+            // If hovering a new icon that's different from what's currently showing
+            if (hoveredId != -1 && hoveredId != currentCollectionHoverId)
+            {
+                // Start or reset the pending timer for this new icon
+                if (hoveredId != pendingCollectionHoverId)
+                {
+                    pendingCollectionHoverId = hoveredId;
+                    pendingCollectionWeapon = hoveredWeapon;
+                    pendingCollectionItem = hoveredItem;
+                    pendingCollectionArcana = hoveredArcana;
+                    collectionHoverStartTime = UnityEngine.Time.unscaledTime;
+                }
+                else
+                {
+                    // Still waiting on the same pending icon - check delay
+                    float elapsed = UnityEngine.Time.unscaledTime - collectionHoverStartTime;
+                    if (elapsed >= CollectionHoverDelay)
+                    {
+                        // Delay elapsed - replace current popup with new one
+                        currentCollectionHoverId = hoveredId;
+                        pendingCollectionHoverId = -1;
+                        ShowCollectionPopup(hoveredWeapon, hoveredItem, pendingCollectionArcana);
+                    }
+                }
+            }
+            else if (hoveredId == currentCollectionHoverId)
+            {
+                // Still hovering the currently shown icon - clear any pending
+                pendingCollectionHoverId = -1;
+            }
+            else
+            {
+                // Not hovering any icon - clear pending but keep current popup visible
+                pendingCollectionHoverId = -1;
+            }
+        }
+
+        private static void ShowCollectionPopup(WeaponType? weaponType, ItemType? itemType, object arcanaType = null)
+        {
+            HideCollectionPopup();
+
+            // Try to cache data if not cached yet (needed for popup content)
+            if (cachedDataManager == null)
+            {
+                TryCacheDataManagerStatic();
+            }
+
+            // Find the Collection view's canvas or fall back to any active canvas
+            UnityEngine.Transform popupParent = null;
+            var collectionsView = UnityEngine.GameObject.Find("UI/Canvas - App/Safe Area/View - Collections");
+            if (collectionsView != null)
+            {
+                popupParent = collectionsView.transform;
+            }
+            else
+            {
+                var canvases = UnityEngine.Object.FindObjectsOfType<UnityEngine.Canvas>();
+                for (int i = 0; i < canvases.Count; i++)
+                {
+                    if (canvases[i] != null && canvases[i].gameObject.activeInHierarchy)
+                    {
+                        popupParent = canvases[i].transform;
+                        break;
+                    }
+                }
+            }
+            if (popupParent == null) return;
+
+            // Create appropriate popup type
+            if (arcanaType != null)
+            {
+                var arcanaData = GetArcanaData(arcanaType);
+                if (arcanaData == null)
+                {
+                    MelonLogger.Warning($"[CollectionPopup] Could not get arcana data for {arcanaType}");
+                    return;
+                }
+                collectionPopup = CreateArcanaPopup(popupParent, arcanaData);
+            }
+            else
+            {
+                collectionPopup = CreatePopup(popupParent, weaponType, itemType);
+            }
+            if (collectionPopup == null) return;
+
+            // Position: right side of screen, left-aligned with the filter/icon panel
+            var popupRect = collectionPopup.GetComponent<UnityEngine.RectTransform>();
+            var filterPanel = UnityEngine.GameObject.Find("UI/Canvas - App/Safe Area/View - Collections/FilterPanel");
+            popupRect.anchorMin = new UnityEngine.Vector2(0f, 0f);
+            popupRect.anchorMax = new UnityEngine.Vector2(0f, 0f);
+            popupRect.pivot = new UnityEngine.Vector2(0f, 1f); // left-top pivot
+            if (filterPanel != null)
+            {
+                var fpRect = filterPanel.GetComponent<UnityEngine.RectTransform>();
+                float leftX = fpRect.offsetMin.x;
+                float belowFilterY = fpRect.offsetMin.y;
+                popupRect.anchoredPosition = new UnityEngine.Vector2(leftX, belowFilterY - 15f);
+            }
+            else
+            {
+                popupRect.anchoredPosition = new UnityEngine.Vector2(1450f, 930f);
+            }
+        }
+
+        private static void HideCollectionPopup()
+        {
+            if (collectionPopup != null)
+            {
+                UnityEngine.Object.Destroy(collectionPopup);
+                collectionPopup = null;
+            }
+        }
+
+        #endregion
+
+        // Check if a transform is under the "GAME UI" hierarchy (not on Collection/menu screens)
+        private static bool IsUnderGameUI(UnityEngine.Transform t)
+        {
+            var current = t;
+            while (current != null)
+            {
+                if (current.name == "GAME UI")
+                    return true;
+                current = current.parent;
+            }
+            return false;
+        }
+
         /// <summary>
         /// Called by SetWeaponData patch to register a UI element with its weapon type.
         /// </summary>
         public static void RegisterWeaponUI(int instanceId, UnityEngine.GameObject go, WeaponType type, bool isAddMethod = false)
         {
+            // Collection/menu screen icons: track for raycast hover but don't add EventTriggers
+            if (!IsUnderGameUI(go.transform))
+            {
+                collectionIcons[instanceId] = (go, type, null, null);
+                return;
+            }
+
             uiToWeaponType[instanceId] = type;
 
             UnityEngine.GameObject iconGo = null;
@@ -3556,6 +3902,13 @@ namespace VSItemTooltips
         /// </summary>
         public static void RegisterItemUI(int instanceId, UnityEngine.GameObject go, ItemType type, bool isAddMethod = false)
         {
+            // Collection/menu screen icons: track for raycast hover but don't add EventTriggers
+            if (!IsUnderGameUI(go.transform))
+            {
+                collectionIcons[instanceId] = (go, null, type, null);
+                return;
+            }
+
             uiToItemType[instanceId] = type;
 
             UnityEngine.GameObject iconGo = null;
@@ -3583,6 +3936,27 @@ namespace VSItemTooltips
                 AddHoverToGameObject(go, null, type);
                 MelonLogger.Msg($"Registered item UI (whole card): {type}");
             }
+        }
+
+        /// <summary>
+        /// Called by SetArcana patch to register an arcana UI element on the Collection screen.
+        /// </summary>
+        public static void RegisterArcanaUI(int instanceId, UnityEngine.GameObject go, object arcanaType)
+        {
+            if (!IsUnderGameUI(go.transform))
+            {
+                collectionIcons[instanceId] = (go, null, null, arcanaType);
+                MelonLogger.Msg($"Registered arcana collection icon: {arcanaType} on {go.name}");
+                return;
+            }
+        }
+
+        /// <summary>
+        /// Public accessor for cached ArcanaType enum so GenericIconPatches can use it.
+        /// </summary>
+        public static System.Type GetCachedArcanaTypeEnum()
+        {
+            return cachedArcanaTypeEnum;
         }
 
         /// <summary>
@@ -4248,46 +4622,12 @@ namespace VSItemTooltips
         {
             try
             {
-                if (arcanaData == null) return false;
-
-                var weaponsProp = arcanaData.GetType().GetProperty("weapons", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (weaponsProp == null) return false;
-
-                var weapons = weaponsProp.GetValue(arcanaData);
-                if (weapons == null) return false;
-
-                var countProp = weapons.GetType().GetProperty("Count");
-                if (countProp == null) return false;
-
-                int count = (int)countProp.GetValue(weapons);
-                if (count == 0) return false;
-
-                var itemProp = weapons.GetType().GetProperty("Item");
-                if (itemProp == null) return false;
-
-                int targetValue = (int)weaponType;
-
-                for (int i = 0; i < count; i++)
+                string targetName = weaponType.ToString();
+                var affected = GetArcanaAffectedWeaponTypes(arcanaData);
+                foreach (var wt in affected)
                 {
-                    var w = itemProp.GetValue(weapons, new object[] { i });
-                    if (w == null) continue;
-
-                    var il2cppObj = w as Il2CppSystem.Object;
-                    if (il2cppObj != null)
-                    {
-                        try
-                        {
-                            unsafe
-                            {
-                                IntPtr ptr = il2cppObj.Pointer;
-                                int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                                if (*valuePtr == targetValue) return true;
-                            }
-                        }
-                        catch { }
-                    }
+                    if (wt == weaponType) return true;
                 }
-
                 return false;
             }
             catch
@@ -4300,46 +4640,11 @@ namespace VSItemTooltips
         {
             try
             {
-                if (arcanaData == null) return false;
-
-                var itemsProp = arcanaData.GetType().GetProperty("items", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (itemsProp == null) return false;
-
-                var items = itemsProp.GetValue(arcanaData);
-                if (items == null) return false;
-
-                var countProp = items.GetType().GetProperty("Count");
-                if (countProp == null) return false;
-
-                int count = (int)countProp.GetValue(items);
-                if (count == 0) return false;
-
-                var itemProp = items.GetType().GetProperty("Item");
-                if (itemProp == null) return false;
-
-                int targetValue = (int)itemType;
-
-                for (int i = 0; i < count; i++)
+                var affected = GetArcanaAffectedItemTypes(arcanaData);
+                foreach (var it in affected)
                 {
-                    var item = itemProp.GetValue(items, new object[] { i });
-                    if (item == null) continue;
-
-                    var il2cppObj = item as Il2CppSystem.Object;
-                    if (il2cppObj != null)
-                    {
-                        try
-                        {
-                            unsafe
-                            {
-                                IntPtr ptr = il2cppObj.Pointer;
-                                int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                                if (*valuePtr == targetValue) return true;
-                            }
-                        }
-                        catch { }
-                    }
+                    if (it == itemType) return true;
                 }
-
                 return false;
             }
             catch
@@ -4351,7 +4656,7 @@ namespace VSItemTooltips
         private static List<WeaponType> GetArcanaAffectedWeaponTypes(object arcanaData)
         {
             var weaponTypes = new List<WeaponType>();
-            var seenTypes = new HashSet<int>();
+            var seenNames = new HashSet<string>();
             try
             {
                 if (arcanaData == null) return weaponTypes;
@@ -4375,24 +4680,19 @@ namespace VSItemTooltips
                     if (w == null) continue;
 
                     var il2cppObj = w as Il2CppSystem.Object;
-                    if (il2cppObj != null)
-                    {
-                        try
-                        {
-                            unsafe
-                            {
-                                IntPtr ptr = il2cppObj.Pointer;
-                                int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                                int weaponTypeInt = *valuePtr;
+                    if (il2cppObj == null) continue;
 
-                                if (System.Enum.IsDefined(typeof(WeaponType), weaponTypeInt) && seenTypes.Add(weaponTypeInt))
-                                {
-                                    weaponTypes.Add((WeaponType)weaponTypeInt);
-                                }
-                            }
+                    try
+                    {
+                        string name = il2cppObj.ToString();
+                        if (string.IsNullOrEmpty(name) || !seenNames.Add(name)) continue;
+
+                        if (System.Enum.TryParse<WeaponType>(name, out var wt))
+                        {
+                            weaponTypes.Add(wt);
                         }
-                        catch { }
                     }
+                    catch { }
                 }
             }
             catch { }
@@ -4402,7 +4702,7 @@ namespace VSItemTooltips
         private static List<ItemType> GetArcanaAffectedItemTypes(object arcanaData)
         {
             var itemTypes = new List<ItemType>();
-            var seenTypes = new HashSet<int>();
+            var seenNames = new HashSet<string>();
             try
             {
                 if (arcanaData == null) return itemTypes;
@@ -4426,24 +4726,19 @@ namespace VSItemTooltips
                     if (item == null) continue;
 
                     var il2cppObj = item as Il2CppSystem.Object;
-                    if (il2cppObj != null)
-                    {
-                        try
-                        {
-                            unsafe
-                            {
-                                IntPtr ptr = il2cppObj.Pointer;
-                                int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                                int itemTypeInt = *valuePtr;
+                    if (il2cppObj == null) continue;
 
-                                if (System.Enum.IsDefined(typeof(ItemType), itemTypeInt) && seenTypes.Add(itemTypeInt))
-                                {
-                                    itemTypes.Add((ItemType)itemTypeInt);
-                                }
-                            }
+                    try
+                    {
+                        string name = il2cppObj.ToString();
+                        if (string.IsNullOrEmpty(name) || !seenNames.Add(name)) continue;
+
+                        if (System.Enum.TryParse<ItemType>(name, out var it))
+                        {
+                            itemTypes.Add(it);
                         }
-                        catch { }
                     }
+                    catch { }
                 }
             }
             catch { }
@@ -5296,6 +5591,33 @@ namespace VSItemTooltips
             }
         }
 
+        // For methods that take ArcanaType (runtime IL2CPP enum) - searches __args for it
+        public static void SetArcana_Postfix_ArgN(object __instance, object[] __args, MethodBase __originalMethod)
+        {
+            try
+            {
+                var arcanaEnum = ItemTooltipsMod.GetCachedArcanaTypeEnum();
+                if (arcanaEnum == null) return;
+
+                var go = GetGameObject(__instance);
+                if (go == null) return;
+
+                foreach (var arg in __args)
+                {
+                    if (arg != null && arg.GetType() == arcanaEnum)
+                    {
+                        ItemTooltipsMod.RegisterArcanaUI(go.GetInstanceID(), go, arg);
+                        MelonLogger.Msg($"Auto-registered arcana icon (argN): {arg} on {go.name}");
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"Error in generic arcana patch (argN): {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// Tries to cache the game session from an argument that might be a page object or CharacterController.
         /// </summary>
@@ -5305,6 +5627,14 @@ namespace VSItemTooltips
 
             var argType = arg.GetType();
             var typeName = argType.Name.ToLower();
+
+            // Check if this arg is a DataManager (has GetConvertedWeapons method)
+            if (!ItemTooltipsMod.HasCachedDataManager() && argType.GetMethod("GetConvertedWeapons") != null)
+            {
+                MelonLogger.Msg($"Found DataManager in patch arg: {argType.Name}");
+                ItemTooltipsMod.CacheDataManager(arg);
+                return;
+            }
 
             // Check if this is a CharacterController - if so, try to get session from it
             if (typeName.Contains("character") || typeName.Contains("controller"))
@@ -5361,6 +5691,48 @@ namespace VSItemTooltips
                         }
                     }
                     catch { }
+                }
+            }
+
+            // Also search for DataManager reference on page-like objects
+            if (!ItemTooltipsMod.HasCachedDataManager())
+            {
+                var allProps = argType.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                foreach (var prop in allProps)
+                {
+                    if (prop.PropertyType.Name.Contains("DataManager"))
+                    {
+                        try
+                        {
+                            var dm = prop.GetValue(arg);
+                            if (dm != null)
+                            {
+                                MelonLogger.Msg($"Found DataManager on {argType.Name}.{prop.Name}");
+                                ItemTooltipsMod.CacheDataManager(dm);
+                                return;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                var allFields = argType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                foreach (var field in allFields)
+                {
+                    if (field.FieldType.Name.Contains("DataManager"))
+                    {
+                        try
+                        {
+                            var dm = field.GetValue(arg);
+                            if (dm != null)
+                            {
+                                MelonLogger.Msg($"Found DataManager on {argType.Name}.{field.Name} field");
+                                ItemTooltipsMod.CacheDataManager(dm);
+                                return;
+                            }
+                        }
+                        catch { }
+                    }
                 }
             }
         }
