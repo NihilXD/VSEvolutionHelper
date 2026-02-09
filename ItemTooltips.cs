@@ -1881,8 +1881,8 @@ namespace VSItemTooltips
                 var data = GetWeaponData(weaponType.Value);
                 if (data != null)
                 {
-                    itemName = data.name ?? weaponType.Value.ToString();
-                    description = data.description ?? "";
+                    itemName = GetLocalizedWeaponName(data, weaponType.Value);
+                    description = GetLocalizedWeaponDescription(data, weaponType.Value);
                     itemSprite = GetSpriteForWeapon(weaponType.Value);
                 }
             }
@@ -1891,8 +1891,8 @@ namespace VSItemTooltips
                 var data = GetPowerUpData(itemType.Value);
                 if (data != null)
                 {
-                    itemName = GetPropertyValue<string>(data, "name") ?? itemType.Value.ToString();
-                    description = GetPropertyValue<string>(data, "description") ?? "";
+                    itemName = GetLocalizedPowerUpName(data, itemType.Value);
+                    description = GetLocalizedPowerUpDescription(data, itemType.Value);
                     itemSprite = GetSpriteForItem(itemType.Value);
                 }
             }
@@ -2345,7 +2345,10 @@ namespace VSItemTooltips
                 return AddPassiveEvolutionSection(parent, font, weaponType, yOffset, maxWidth);
             }
 
-            // If this weapon doesn't evolve itself and isn't used as a passive, nothing to show
+            // Check if this weapon is the result of another weapon's evolution
+            yOffset = AddEvolvedFromSection(parent, font, weaponType, yOffset, maxWidth);
+
+            // If this weapon doesn't evolve itself and isn't used as a passive, nothing more to show
             if (!hasOwnEvolution)
             {
                 return yOffset;
@@ -2432,6 +2435,125 @@ namespace VSItemTooltips
         }
 
         /// <summary>
+        /// For evolved weapons, shows what base weapon + passives created this evolution.
+        /// Reverse-lookups: finds base weapons whose evoInto matches the current weapon type.
+        /// </summary>
+        private static float AddEvolvedFromSection(UnityEngine.Transform parent, Il2CppTMPro.TMP_FontAsset font, WeaponType evolvedType, float yOffset, float maxWidth)
+        {
+            if (cachedWeaponsDict == null) return yOffset;
+
+            string evolvedTypeStr = evolvedType.ToString();
+            EvolutionFormula? foundFormula = null;
+
+            try
+            {
+                var keysProperty = cachedWeaponsDict.GetType().GetProperty("Keys");
+                if (keysProperty == null) return yOffset;
+
+                var keys = keysProperty.GetValue(cachedWeaponsDict);
+                var enumerator = keys.GetType().GetMethod("GetEnumerator").Invoke(keys, null);
+                var moveNext = enumerator.GetType().GetMethod("MoveNext");
+                var current = enumerator.GetType().GetProperty("Current");
+
+                while ((bool)moveNext.Invoke(enumerator, null))
+                {
+                    var weaponType = (WeaponType)current.GetValue(enumerator);
+                    var weaponDataList = GetWeaponDataList(weaponType);
+                    if (weaponDataList == null) continue;
+
+                    for (int i = 0; i < weaponDataList.Count; i++)
+                    {
+                        var weaponData = weaponDataList[i];
+                        if (weaponData == null) continue;
+
+                        try
+                        {
+                            string evoInto = GetPropertyValue<string>(weaponData, "evoInto");
+                            if (string.IsNullOrEmpty(evoInto) || evoInto != evolvedTypeStr) continue;
+
+                            var synergyProp = weaponData.GetType().GetProperty("evoSynergy");
+                            if (synergyProp == null) continue;
+
+                            var synergy = synergyProp.GetValue(weaponData) as Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<WeaponType>;
+
+                            foundFormula = new EvolutionFormula
+                            {
+                                BaseWeapon = weaponType,
+                                Passives = CollectPassiveRequirements(synergy),
+                                EvolvedWeapon = evolvedType,
+                                BaseName = GetLocalizedWeaponName(weaponData, weaponType),
+                                BaseSprite = GetSpriteForWeapon(weaponType),
+                                EvolvedSprite = GetSpriteForWeapon(evolvedType)
+                            };
+                            break;
+                        }
+                        catch { }
+                    }
+                    if (foundFormula.HasValue) break;
+                }
+            }
+            catch { }
+
+            if (!foundFormula.HasValue) return yOffset;
+
+            var formula = foundFormula.Value;
+
+            // Add section header
+            yOffset -= Spacing;
+            var headerObj = CreateTextElement(parent, "EvolvedFromHeader", "Evolved from: (click for details)", font, 14f,
+                new UnityEngine.Color(0.9f, 0.75f, 0.3f, 1f), Il2CppTMPro.FontStyles.Bold);
+            var headerRect = headerObj.GetComponent<UnityEngine.RectTransform>();
+            headerRect.anchorMin = new UnityEngine.Vector2(0f, 1f);
+            headerRect.anchorMax = new UnityEngine.Vector2(1f, 1f);
+            headerRect.pivot = new UnityEngine.Vector2(0f, 1f);
+            headerRect.anchoredPosition = new UnityEngine.Vector2(Padding, yOffset);
+            headerRect.sizeDelta = new UnityEngine.Vector2(maxWidth - Padding * 2, 20f);
+            yOffset -= 22f;
+
+            // Create formula row: [Base Weapon] + [Passive1] + [Passive2]
+            float iconSize = 36f;
+            float rowHeight = iconSize + 4f;
+            float xOffset = Padding + 5f;
+
+            // Base weapon icon
+            bool ownsWeapon = PlayerOwnsWeapon(formula.BaseWeapon);
+            var weaponIcon = CreateFormulaIcon(parent, "EvolvedFromBase", formula.BaseSprite, ownsWeapon, iconSize, xOffset, yOffset);
+            AddHoverToGameObject(weaponIcon, formula.BaseWeapon, null, useClick: true);
+            xOffset += iconSize + 3f;
+
+            // Passive requirements
+            if (formula.Passives != null)
+            {
+                for (int p = 0; p < formula.Passives.Count; p++)
+                {
+                    var passive = formula.Passives[p];
+
+                    // Plus sign
+                    var plusObj = CreateTextElement(parent, $"EvolvedFromPlus{p}", "+", font, 14f,
+                        new UnityEngine.Color(0.8f, 0.8f, 0.8f, 1f), Il2CppTMPro.FontStyles.Bold);
+                    var plusRect = plusObj.GetComponent<UnityEngine.RectTransform>();
+                    plusRect.anchorMin = new UnityEngine.Vector2(0f, 1f);
+                    plusRect.anchorMax = new UnityEngine.Vector2(0f, 1f);
+                    plusRect.pivot = new UnityEngine.Vector2(0f, 1f);
+                    plusRect.anchoredPosition = new UnityEngine.Vector2(xOffset, yOffset - 4f);
+                    plusRect.sizeDelta = new UnityEngine.Vector2(14f, iconSize);
+                    xOffset += 14f;
+
+                    // Passive icon
+                    var passiveIcon = CreateFormulaIcon(parent, $"EvolvedFromPassive{p}", passive.Sprite, passive.Owned, iconSize, xOffset, yOffset);
+                    if (passive.WeaponType.HasValue)
+                        AddHoverToGameObject(passiveIcon, passive.WeaponType.Value, null, useClick: true);
+                    else if (passive.ItemType.HasValue)
+                        AddHoverToGameObject(passiveIcon, null, passive.ItemType.Value, useClick: true);
+                    xOffset += iconSize + 3f;
+                }
+            }
+
+            yOffset -= rowHeight;
+            return yOffset;
+        }
+
+        /// <summary>
         /// Shows evolutions for passive items (items that don't evolve themselves but enable other weapons to evolve).
         /// This handles WeaponType values like DURATION (Spellbinder), MAGNET (Attractorb), etc.
         /// </summary>
@@ -2496,14 +2618,14 @@ namespace VSItemTooltips
                                         BaseWeapon = weaponType,
                                         Passives = CollectPassiveRequirements(synergy),
                                         EvolvedWeapon = evoType,
-                                        BaseName = GetPropertyValue<string>(weaponData, "name") ?? weaponType.ToString(),
+                                        BaseName = GetLocalizedWeaponName(weaponData, weaponType),
                                         BaseSprite = GetSpriteForWeapon(weaponType),
                                         EvolvedSprite = GetSpriteForWeapon(evoType)
                                     };
 
                                     var evoData = GetWeaponData(evoType);
                                     if (evoData != null)
-                                        formula.EvolvedName = GetPropertyValue<string>(evoData, "name") ?? evoInto;
+                                        formula.EvolvedName = GetLocalizedWeaponName(evoData, evoType);
                                     else
                                         formula.EvolvedName = evoInto;
 
@@ -2694,14 +2816,14 @@ namespace VSItemTooltips
                                         BaseWeapon = weaponType,
                                         Passives = CollectPassiveRequirements(synergy),
                                         EvolvedWeapon = evoType,
-                                        BaseName = GetPropertyValue<string>(weaponData, "name") ?? weaponType.ToString(),
+                                        BaseName = GetLocalizedWeaponName(weaponData, weaponType),
                                         BaseSprite = GetSpriteForWeapon(weaponType),
                                         EvolvedSprite = GetSpriteForWeapon(evoType)
                                     };
 
                                     var evoData = GetWeaponData(evoType);
                                     if (evoData != null)
-                                        formula.EvolvedName = GetPropertyValue<string>(evoData, "name") ?? evoInto;
+                                        formula.EvolvedName = GetLocalizedWeaponName(evoData, evoType);
                                     else
                                         formula.EvolvedName = evoInto;
 
@@ -3779,7 +3901,18 @@ namespace VSItemTooltips
                     var indexer = dictType.GetProperty("Item");
                     if (indexer != null)
                     {
-                        return indexer.GetValue(cachedPowerUpsDict, new object[] { type });
+                        var listObj = indexer.GetValue(cachedPowerUpsDict, new object[] { type });
+                        // Dictionary value is List<PowerUpData>, get the first item
+                        if (listObj != null)
+                        {
+                            var countProp = listObj.GetType().GetProperty("Count");
+                            if (countProp != null && (int)countProp.GetValue(listObj) > 0)
+                            {
+                                var itemIndexer = listObj.GetType().GetProperty("Item");
+                                if (itemIndexer != null)
+                                    return itemIndexer.GetValue(listObj, new object[] { 0 });
+                            }
+                        }
                     }
                 }
             }
@@ -4006,6 +4139,112 @@ namespace VSItemTooltips
             catch { }
 
             return default;
+        }
+
+        private static string GetLocalizedWeaponDescription(WeaponData data, WeaponType type)
+        {
+            if (data == null) return "";
+
+            // Try GetLocalizedDescriptionTerm + I2 translation first (gives flavor text description)
+            try
+            {
+                var termMethod = data.GetType().GetMethod("GetLocalizedDescriptionTerm", BindingFlags.Public | BindingFlags.Instance);
+                if (termMethod != null)
+                {
+                    var term = termMethod.Invoke(data, new object[] { type }) as string;
+                    if (!string.IsNullOrEmpty(term))
+                    {
+                        var translated = GetI2Translation(term);
+                        if (!string.IsNullOrEmpty(translated)) return translated;
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback to raw description field
+            if (!string.IsNullOrEmpty(data.description))
+                return data.description;
+
+            return "";
+        }
+
+        private static string GetLocalizedWeaponName(WeaponData data, WeaponType type)
+        {
+            if (data == null) return type.ToString();
+            try
+            {
+                var method = data.GetType().GetMethod("GetLocalizedNameTerm", BindingFlags.Public | BindingFlags.Instance);
+                if (method != null)
+                {
+                    var term = method.Invoke(data, new object[] { type }) as string;
+                    if (!string.IsNullOrEmpty(term))
+                    {
+                        var translated = GetI2Translation(term);
+                        if (!string.IsNullOrEmpty(translated)) return translated;
+                    }
+                }
+            }
+            catch { }
+            return data.name ?? type.ToString();
+        }
+
+        private static string GetLocalizedPowerUpDescription(object data, ItemType type)
+        {
+            if (data == null) return "";
+            try
+            {
+                // GetLocalizedDescription is an instance method that takes PowerUpType (not ItemType)
+                // PowerUpType and ItemType may share the same underlying enum values
+                var method = data.GetType().GetMethod("GetLocalizedDescription", BindingFlags.Public | BindingFlags.Instance);
+                if (method != null)
+                {
+                    // Need to convert ItemType to the parameter type the method expects
+                    var paramType = method.GetParameters()[0].ParameterType;
+                    object convertedType = Enum.ToObject(paramType, (int)type);
+                    var result = method.Invoke(data, new object[] { convertedType }) as string;
+                    if (!string.IsNullOrEmpty(result)) return result;
+                }
+            }
+            catch { }
+            return GetPropertyValue<string>(data, "description") ?? "";
+        }
+
+        private static string GetLocalizedPowerUpName(object data, ItemType type)
+        {
+            if (data == null) return type.ToString();
+            try
+            {
+                var method = data.GetType().GetMethod("GetLocalizedName", BindingFlags.Public | BindingFlags.Instance);
+                if (method != null)
+                {
+                    var paramType = method.GetParameters()[0].ParameterType;
+                    object convertedType = Enum.ToObject(paramType, (int)type);
+                    var result = method.Invoke(data, new object[] { convertedType }) as string;
+                    if (!string.IsNullOrEmpty(result)) return result;
+                }
+            }
+            catch { }
+            return GetPropertyValue<string>(data, "name") ?? type.ToString();
+        }
+
+        private static string GetI2Translation(string term)
+        {
+            if (string.IsNullOrEmpty(term)) return null;
+            try
+            {
+                var locType = System.Type.GetType("Il2CppI2.Loc.LocalizationManager, Il2Cppl2localization");
+                if (locType != null)
+                {
+                    var method = locType.GetMethod("GetTranslation", BindingFlags.Public | BindingFlags.Static);
+                    if (method != null)
+                    {
+                        var result = method.Invoke(null, new object[] { term, false, 0, false, true, null, null, false }) as string;
+                        return result;
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static Il2CppTMPro.TMP_FontAsset GetFont()
