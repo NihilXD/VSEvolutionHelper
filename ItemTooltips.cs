@@ -9,15 +9,8 @@ using Il2CppVampireSurvivors.Data.Weapons;
 using Il2CppVampireSurvivors.Objects;
 using Il2CppVampireSurvivors.UI;
 
-// NEW MOD ARCHITECTURE:
-// This file implements universal item tooltips - any weapon/item icon becomes hoverable
-// when the game is paused (level-up, merchant, pause menu).
-//
-// To switch to this mod:
-// 1. In Class1.cs, change the MelonInfo to point to VSItemTooltips.ItemTooltipsMod
-// 2. Or rename this file and update accordingly
-//
-// Currently this is a work-in-progress skeleton.
+[assembly: MelonInfo(typeof(VSItemTooltips.ItemTooltipsMod), "VS Item Tooltips", "1.0.0", "Nihil")]
+[assembly: MelonGame("poncle", "Vampire Survivors")]
 
 namespace VSItemTooltips
 {
