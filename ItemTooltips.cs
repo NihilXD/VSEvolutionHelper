@@ -338,6 +338,7 @@ namespace VSItemTooltips
             cachedGameSession = null;
             cachedGameManager = null;
             cachedAllArcanas = null;
+            cachedSafeArea = null;
             panelCapturedWeapons.Clear();
             panelCapturedItems.Clear();
             arcanaDebugLogged = false;
@@ -501,6 +502,7 @@ namespace VSItemTooltips
                     ScanPauseViewForEquipment(pauseView);
                 }
 
+
                 // Allow re-searching for HUD if not found yet
                 if (hudInventory == null && inGameUIFound)
                 {
@@ -528,6 +530,7 @@ namespace VSItemTooltips
                 loggedScanStatus = false; // Reset so we can warn again if needed
                 loggedScanResults = false;
                 scannedPauseView = false; // Rescan pause view next time
+                scannedWeaponSelection = false;
             }
 
             // Reset view caches if we've returned to main menu (views destroyed)
@@ -538,6 +541,7 @@ namespace VSItemTooltips
                     inGameUIFound = false;
                     hudSearched = false;
                     hudInventory = null;
+                    cachedSafeArea = null;
                 }
             }
 
@@ -558,6 +562,13 @@ namespace VSItemTooltips
             {
                 lastScanTime = currentTime;
                 ScanForIcons();
+
+                // Scan weapon selection view (Arma Dio pickup) - checked continuously
+                // because it may activate after another view (like ItemFound) already triggered pause
+                if (!scannedWeaponSelection && weaponSelectionView != null && weaponSelectionView.activeInHierarchy)
+                {
+                    ScanWeaponSelectionView(weaponSelectionView);
+                }
             }
         }
 
@@ -569,6 +580,7 @@ namespace VSItemTooltips
         private static UnityEngine.GameObject pauseView = null;
         private static UnityEngine.GameObject itemFoundView = null;
         private static UnityEngine.GameObject arcanaView = null;
+        private static UnityEngine.GameObject weaponSelectionView = null;
 
         // Cached HUD elements (always visible, but only hoverable when paused)
         private static UnityEngine.GameObject hudInventory = null;
@@ -577,6 +589,9 @@ namespace VSItemTooltips
 
         // Currently active views (for targeted scanning)
         private static List<UnityEngine.Transform> activeUIContainers = new List<UnityEngine.Transform>();
+
+        // Cached Safe Area transform (parent of all views)
+        private static UnityEngine.Transform cachedSafeArea = null;
 
         private static bool triedFindingPauseView = false;
 
@@ -593,6 +608,8 @@ namespace VSItemTooltips
                 itemFoundView = UnityEngine.GameObject.Find("GAME UI/Canvas - Game UI/Safe Area/View - ItemFound");
             if (arcanaView == null)
                 arcanaView = UnityEngine.GameObject.Find("GAME UI/Canvas - Game UI/Safe Area/View - ArcanaMainSelection");
+            if (weaponSelectionView == null)
+                weaponSelectionView = UnityEngine.GameObject.Find("GAME UI/Canvas - Game UI/Safe Area/View - WeaponSelection");
 
             // Try multiple paths for pause view
             if (pauseView == null)
@@ -633,7 +650,7 @@ namespace VSItemTooltips
             }
 
             // Check if we're in a game by seeing if any view was found
-            bool anyViewFound = levelUpView != null || merchantView != null || pauseView != null || itemFoundView != null;
+            bool anyViewFound = levelUpView != null || merchantView != null || pauseView != null || itemFoundView != null || weaponSelectionView != null;
 
             // Only search for HUD once we've confirmed game UI exists (i.e., we're in a game)
             if (!hudSearched && anyViewFound && !inGameUIFound)
@@ -694,41 +711,52 @@ namespace VSItemTooltips
                 isPaused = true;
             }
 
+            if (weaponSelectionView != null && weaponSelectionView.activeInHierarchy)
+            {
+                activeUIContainers.Add(weaponSelectionView.transform);
+                isPaused = true;
+            }
+
             // Also check time scale as fallback, but ONLY if we're in an actual game run
             // (prevents activating on main menu / Collection screen where timeScale may also be 0)
             if (!isPaused && inGameUIFound && UnityEngine.Time.timeScale == 0f)
             {
-                // Log once when we detect pause via timeScale
-                if (!wasGamePaused)
+                // Cache Safe Area transform for efficient repeated access
+                if (cachedSafeArea == null)
                 {
-                    // Search for any active view that might be the pause screen
-                    var safeArea = UnityEngine.GameObject.Find("GAME UI/Canvas - Game UI/Safe Area");
-                    if (safeArea != null)
+                    var safeAreaGo = UnityEngine.GameObject.Find("GAME UI/Canvas - Game UI/Safe Area");
+                    if (safeAreaGo != null)
+                        cachedSafeArea = safeAreaGo.transform;
+                }
+
+                // Scan for any active views under Safe Area every frame
+                // (handles Arma Dio, and any other views not explicitly tracked)
+                if (cachedSafeArea != null)
+                {
+                    for (int i = 0; i < cachedSafeArea.childCount; i++)
                     {
-                        for (int i = 0; i < safeArea.transform.childCount; i++)
+                        var child = cachedSafeArea.GetChild(i);
+                        if (child.gameObject.activeInHierarchy)
                         {
-                            var child = safeArea.transform.GetChild(i);
-                            if (child.gameObject.activeInHierarchy)
+                            if (child.name.Contains("View") || child.name.Contains("Map") || child.name.Contains("Pause"))
                             {
-                                // Add any active view as a container
-                                if (child.name.Contains("View") || child.name.Contains("Map") || child.name.Contains("Pause"))
+                                activeUIContainers.Add(child);
+
+                                if (pauseView == null && (child.name.ToLower().Contains("map") || child.name.ToLower().Contains("pause")))
                                 {
-                                    activeUIContainers.Add(child);
-                                    if (pauseView == null && (child.name.ToLower().Contains("map") || child.name.ToLower().Contains("pause")))
-                                    {
-                                        pauseView = child.gameObject;
-                                    }
+                                    pauseView = child.gameObject;
                                 }
                             }
                         }
                     }
-                    else
-                    {
-                        MelonLogger.Warning("Safe Area not found!");
-                    }
+                }
+                else if (!wasGamePaused)
+                {
+                    MelonLogger.Warning("Safe Area not found!");
                 }
                 isPaused = true;
             }
+
 
             // If paused by any means, also include the HUD inventory for scanning
             // (it's always visible, but we only want hovers when paused)
@@ -917,6 +945,214 @@ namespace VSItemTooltips
         }
 
         private static bool scannedPauseView = false;
+        private static bool scannedWeaponSelection = false;
+
+        /// <summary>
+        /// Scans the Arma Dio weapon selection view for items with WeaponType/ItemType properties.
+        /// Walks all children recursively and adds hover tracking to any that have type info.
+        /// </summary>
+        private static System.Type cachedWeaponSelectionItemType = null;
+        private static bool triedFindingWSIType = false;
+
+        private static void ScanWeaponSelectionView(UnityEngine.GameObject viewGo)
+        {
+            if (scannedWeaponSelection) return;
+            scannedWeaponSelection = true;
+
+            // Find the WeaponSelectionItemUI type once via assembly reflection
+            if (!triedFindingWSIType)
+            {
+                triedFindingWSIType = true;
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (!assembly.FullName.Contains("Il2Cpp")) continue;
+                    try
+                    {
+                        var wsiType = assembly.GetTypes().FirstOrDefault(t => t.Name == "WeaponSelectionItemUI");
+                        if (wsiType != null)
+                        {
+                            cachedWeaponSelectionItemType = wsiType;
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (cachedWeaponSelectionItemType == null)
+            {
+                MelonLogger.Warning("WeaponSelectionItemUI type not found in assemblies");
+                return;
+            }
+
+            // Find Content container: Panel → ScrollViewWithSlider → Viewport → Content
+            var panel = FindChildRecursive(viewGo.transform, "Panel");
+            if (panel == null) { MelonLogger.Warning("Panel not found in WeaponSelection"); return; }
+
+            var scrollView = panel.Find("ScrollViewWithSlider");
+            if (scrollView == null) { MelonLogger.Warning("ScrollViewWithSlider not found"); return; }
+
+            var viewport = scrollView.Find("Viewport");
+            if (viewport == null) { MelonLogger.Warning("Viewport not found"); return; }
+
+            UnityEngine.Transform content = null;
+            for (int i = 0; i < viewport.childCount; i++)
+            {
+                var child = viewport.GetChild(i);
+                if (child.name == "Content") { content = child; break; }
+            }
+            if (content == null) { MelonLogger.Warning("Content not found"); return; }
+
+            // Cache the get__type method (getter for _type property)
+            var getTypeMethod = cachedWeaponSelectionItemType.GetMethod("get__type", BindingFlags.Public | BindingFlags.Instance);
+            // Also try GetWeaponType as fallback
+            var getWeaponTypeMethod = cachedWeaponSelectionItemType.GetMethod("GetWeaponType", BindingFlags.Public | BindingFlags.Instance);
+
+            int count = 0;
+            for (int i = 0; i < content.childCount; i++)
+            {
+                var item = content.GetChild(i);
+                if (!item.gameObject.activeInHierarchy) continue;
+
+                WeaponType? weaponType = null;
+
+                try
+                {
+                    // Use string-based GetComponent which works in IL2CPP
+                    var baseComp = item.gameObject.GetComponent("WeaponSelectionItemUI");
+                    if (baseComp != null)
+                    {
+                        // Cast to the actual type via IL2CPP pointer
+                        // IL2CPP proxy objects are constructed with IntPtr to the underlying object
+                        var typedComp = System.Activator.CreateInstance(cachedWeaponSelectionItemType, new object[] { baseComp.Pointer });
+
+                        // Try get__type() method
+                        if (getTypeMethod != null)
+                        {
+                            var val = getTypeMethod.Invoke(typedComp, null);
+                            if (val is WeaponType wt) weaponType = wt;
+                        }
+
+                        // Fallback to GetWeaponType()
+                        if (weaponType == null && getWeaponTypeMethod != null)
+                        {
+                            var val = getWeaponTypeMethod.Invoke(typedComp, null);
+                            if (val is WeaponType wt) weaponType = wt;
+                        }
+
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (i == 0) MelonLogger.Warning($"Error reading WSI component: {ex.Message}");
+                }
+
+                if (weaponType.HasValue)
+                {
+                    // Add hover to WeaponFrame icon, not the whole card
+                    var weaponFrame = item.Find("WeaponFrame");
+                    var hoverTarget = weaponFrame != null ? weaponFrame.gameObject : item.gameObject;
+                    AddHoverToGameObject(hoverTarget, weaponType, null);
+                    count++;
+                }
+            }
+
+            MelonLogger.Msg($"WeaponSelection: set up hovers on {count}/{content.childCount} items");
+        }
+
+        /// <summary>
+        /// Recursively scans children for components with WeaponType/ItemType properties and adds hovers.
+        /// </summary>
+        private static int ScanChildrenForTypes(UnityEngine.Transform parent, int depth, int maxDepth)
+        {
+            if (depth > maxDepth) return 0;
+            int count = 0;
+
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (!child.gameObject.activeInHierarchy) continue;
+
+                WeaponType? weaponType = null;
+                ItemType? itemType = null;
+
+                var components = child.GetComponents<UnityEngine.Component>();
+                foreach (var comp in components)
+                {
+                    if (comp == null) continue;
+                    var compType = comp.GetType();
+                    if (compType.Namespace != null && compType.Namespace.StartsWith("UnityEngine")) continue;
+
+                    // Check Type property
+                    var typeProp = compType.GetProperty("Type", BindingFlags.Public | BindingFlags.Instance);
+                    if (typeProp != null)
+                    {
+                        try
+                        {
+                            var typeVal = typeProp.GetValue(comp);
+                            if (typeVal is WeaponType wt) weaponType = wt;
+                            else if (typeVal is ItemType it) itemType = it;
+                        }
+                        catch { }
+                    }
+
+                    // Check _type field
+                    if (weaponType == null && itemType == null)
+                    {
+                        var typeField = compType.GetField("_type", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (typeField != null)
+                        {
+                            try
+                            {
+                                var typeVal = typeField.GetValue(comp);
+                                if (typeVal is WeaponType wt) weaponType = wt;
+                                else if (typeVal is ItemType it) itemType = it;
+                            }
+                            catch { }
+                        }
+                    }
+
+                    // Check WeaponType / ItemType properties by name
+                    if (weaponType == null && itemType == null)
+                    {
+                        var weaponProp = compType.GetProperty("WeaponType", BindingFlags.Public | BindingFlags.Instance);
+                        if (weaponProp != null)
+                        {
+                            try
+                            {
+                                var val = weaponProp.GetValue(comp);
+                                if (val is WeaponType wt) weaponType = wt;
+                            }
+                            catch { }
+                        }
+
+                        var itemProp = compType.GetProperty("ItemType", BindingFlags.Public | BindingFlags.Instance);
+                        if (itemProp != null)
+                        {
+                            try
+                            {
+                                var val = itemProp.GetValue(comp);
+                                if (val is ItemType it) itemType = it;
+                            }
+                            catch { }
+                        }
+                    }
+
+                    if (weaponType.HasValue || itemType.HasValue) break;
+                }
+
+                if (weaponType.HasValue || itemType.HasValue)
+                {
+                    AddHoverToGameObject(child.gameObject, weaponType, itemType);
+                    count++;
+                }
+
+                // Recurse into children
+                count += ScanChildrenForTypes(child, depth + 1, maxDepth);
+            }
+
+            return count;
+        }
 
         private static void ScanPauseViewForEquipment(UnityEngine.GameObject pauseViewGo)
         {
@@ -2818,12 +3054,16 @@ namespace VSItemTooltips
                 AddHoverToGameObject(weaponIcon, formula.BaseWeapon, null, useClick: true);
                 xOffset += iconSize + 3f;
 
-                // Show ALL passive requirements (including this one)
+                // Show passive requirements (skip the one we're already viewing)
                 if (formula.Passives != null)
                 {
                     for (int p = 0; p < formula.Passives.Count; p++)
                     {
                         var passive = formula.Passives[p];
+
+                        // Skip the passive we're already hovering — it's redundant
+                        if (passive.WeaponType.HasValue && passive.WeaponType.Value == passiveType)
+                            continue;
 
                         // Plus sign
                         var plusObj = CreateTextElement(parent, $"Plus{formulaIndex}_{p}", "+", font, 14f,
@@ -3505,26 +3745,14 @@ namespace VSItemTooltips
         /// </summary>
         private static UnityEngine.Transform FindPopupParent(UnityEngine.Transform anchor)
         {
-            // Known parent names we want to attach popup to
-            string[] knownParents = new string[]
-            {
-                "View - Level Up",
-                "View - Merchant",
-                "View - Pause",
-                "View - Paused",
-                "View - ItemFound",
-                "View - Game",
-                "Safe Area"
-            };
-
+            // Walk up the hierarchy and attach to any "View -" parent or Safe Area.
+            // This handles known views (Level Up, Merchant, etc.) as well as
+            // dynamically discovered ones (Arma Dio pickup selection, etc.)
             var current = anchor;
             while (current != null)
             {
-                foreach (var name in knownParents)
-                {
-                    if (current.name == name)
-                        return current;
-                }
+                if (current.name.StartsWith("View - ") || current.name == "Safe Area")
+                    return current;
                 current = current.parent;
             }
 
