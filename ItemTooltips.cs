@@ -2004,7 +2004,25 @@ namespace VSItemTooltips
                 }
                 else if (itemType.HasValue)
                 {
-                    yOffset = AddItemEvolutionSection(popup.transform, font, itemType.Value, yOffset, maxWidth);
+                    // Passive items exist as both ItemType and WeaponType. Try to find the
+                    // matching WeaponType so we can use AddWeaponEvolutionSection which has
+                    // the full passive evolution logic (finds ALL recipes using this item).
+                    string itemEnumName = itemType.Value.ToString();
+                    bool handledAsWeapon = false;
+                    if (System.Enum.TryParse<WeaponType>(itemEnumName, out var matchingWeapon) &&
+                        GetWeaponData(matchingWeapon) != null)
+                    {
+                        yOffset = AddWeaponEvolutionSection(popup.transform, font, matchingWeapon, yOffset, maxWidth);
+                        handledAsWeapon = true;
+                    }
+                    else
+                    {
+                    }
+
+                    if (!handledAsWeapon)
+                    {
+                        yOffset = AddItemEvolutionSection(popup.transform, font, itemType.Value, yOffset, maxWidth);
+                    }
                 }
 
                 // Arcana section - show active arcanas affecting this item
@@ -2069,7 +2087,9 @@ namespace VSItemTooltips
                 {
                     passive.WeaponType = reqType;
                     passive.Sprite = GetSpriteForWeapon(reqType);
-                    passive.Owned = PlayerOwnsWeapon(reqType);
+                    // Check both weapons and accessories — passive items like Wings
+                    // are in the weapons dictionary but equipped in the accessories slot
+                    passive.Owned = PlayerOwnsWeapon(reqType) || PlayerOwnsAccessory(reqType);
                 }
                 else
                 {
@@ -2203,6 +2223,58 @@ namespace VSItemTooltips
             return false;
         }
 
+        // Check if a WeaponType is equipped as an accessory (passive item).
+        // Passive items like Wings have WeaponType entries but are in the accessories slot.
+        private static bool PlayerOwnsAccessory(WeaponType weaponType)
+        {
+            if (cachedGameSession == null) return false;
+
+            try
+            {
+                var activeCharProp = cachedGameSession.GetType().GetProperty("ActiveCharacter", BindingFlags.Public | BindingFlags.Instance);
+                if (activeCharProp == null) return false;
+
+                var activeChar = activeCharProp.GetValue(cachedGameSession);
+                if (activeChar == null) return false;
+
+                var accessoriesManagerProp = activeChar.GetType().GetProperty("AccessoriesManager", BindingFlags.Public | BindingFlags.Instance);
+                if (accessoriesManagerProp == null) return false;
+
+                var accessoriesManager = accessoriesManagerProp.GetValue(activeChar);
+                if (accessoriesManager == null) return false;
+
+                var activeEquipProp = accessoriesManager.GetType().GetProperty("ActiveEquipment", BindingFlags.Public | BindingFlags.Instance);
+                if (activeEquipProp == null) return false;
+
+                var equipment = activeEquipProp.GetValue(accessoriesManager);
+                if (equipment == null) return false;
+
+                var countProp = equipment.GetType().GetProperty("Count");
+                var indexer = equipment.GetType().GetProperty("Item");
+                if (countProp == null || indexer == null) return false;
+
+                int count = (int)countProp.GetValue(equipment);
+                string searchStr = weaponType.ToString();
+
+                for (int i = 0; i < count; i++)
+                {
+                    var item = indexer.GetValue(equipment, new object[] { i });
+                    if (item == null) continue;
+
+                    var typeProp = item.GetType().GetProperty("Type", BindingFlags.Public | BindingFlags.Instance);
+                    if (typeProp != null)
+                    {
+                        var equipType = typeProp.GetValue(item);
+                        if (equipType != null && equipType.ToString() == searchStr)
+                            return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
         // Create an icon with optional yellow circle background for owned items
         private static UnityEngine.GameObject CreateFormulaIcon(UnityEngine.Transform parent, string name,
             UnityEngine.Sprite sprite, bool isOwned, float size, float x, float y)
@@ -2258,13 +2330,15 @@ namespace VSItemTooltips
 
         /// <summary>
         /// Counts how many weapons use this type as a passive requirement in their evoSynergy.
+        /// Optionally filters out dual-weapon partners (weapons that produce the same evolved
+        /// weapon as ownEvoInto, which are just the other side of a combo evolution).
         /// </summary>
-        private static int CountPassiveUses(WeaponType passiveType)
+        private static int CountPassiveUses(WeaponType passiveType, string ownEvoInto = null)
         {
             if (cachedWeaponsDict == null) return 0;
 
             int count = 0;
-            string passiveTypeStr = passiveType.ToString();
+            int passiveInt = (int)passiveType;
 
             try
             {
@@ -2300,9 +2374,13 @@ namespace VSItemTooltips
                             string evoInto = GetPropertyValue<string>(weaponData, "evoInto");
                             if (string.IsNullOrEmpty(evoInto)) continue;
 
+                            // Skip dual-weapon partner: if this weapon evolves into the same
+                            // thing as our weapon, it's just the reverse side of the same combo
+                            if (ownEvoInto != null && evoInto == ownEvoInto) continue;
+
                             for (int j = 0; j < synergy.Length; j++)
                             {
-                                if (synergy[j].ToString() == passiveTypeStr)
+                                if ((int)synergy[j] == passiveInt)
                                 {
                                     count++;
                                     break; // Count each weapon only once
@@ -2342,24 +2420,25 @@ namespace VSItemTooltips
 
             bool hasOwnEvolution = !string.IsNullOrEmpty(evoInto);
 
-            // Check if this weapon is used as a passive requirement by OTHER weapons
-            // This handles items like Empty Tome, Spinach, etc. that enable multiple evolutions
-            // Only treat as passive if this weapon doesn't have its own evolution —
-            // otherwise weapons like Shadow Pinion that appear in multi-weapon recipes
-            // would incorrectly show as passive items instead of their own evolution.
-            if (!hasOwnEvolution)
+            // Count how many OTHER weapons use this one as a passive ingredient,
+            // excluding dual-weapon partners (recipes producing the same evolved weapon).
+            // True passives (Wings, Clover, etc.) will have 2+ non-partner uses.
+            // Active weapons in dual combos (Cross+Clover) will have 0-1.
+            int passiveUseCount = CountPassiveUses(weaponType, evoInto);
+
+            // If this weapon is genuinely used as a passive in multiple other recipes,
+            // show the passive section with all formulas (including own evolution).
+            if (passiveUseCount >= 2)
             {
-                int passiveUseCount = CountPassiveUses(weaponType);
-                if (passiveUseCount > 0)
-                {
-                    return AddPassiveEvolutionSection(parent, font, weaponType, yOffset, maxWidth);
-                }
+                yOffset = AddPassiveEvolutionSection(parent, font, weaponType, yOffset, maxWidth);
+                yOffset = AddEvolvedFromSection(parent, font, weaponType, yOffset, maxWidth);
+                return yOffset;
             }
 
             // Check if this weapon is the result of another weapon's evolution
             yOffset = AddEvolvedFromSection(parent, font, weaponType, yOffset, maxWidth);
 
-            // If this weapon doesn't evolve itself and isn't used as a passive, nothing more to show
+            // If this weapon doesn't have its own evolution, we're done
             if (!hasOwnEvolution)
             {
                 return yOffset;
@@ -2572,9 +2651,8 @@ namespace VSItemTooltips
         {
             if (cachedWeaponsDict == null) return yOffset;
 
-
             var formulas = new System.Collections.Generic.List<EvolutionFormula>();
-            string passiveTypeStr = passiveType.ToString();
+            int passiveInt = (int)passiveType;
 
             try
             {
@@ -2612,7 +2690,7 @@ namespace VSItemTooltips
                             bool found = false;
                             for (int j = 0; j < synergy.Length; j++)
                             {
-                                if (synergy[j].ToString() == passiveTypeStr)
+                                if ((int)synergy[j] == passiveInt)
                                 {
                                     found = true;
                                     break;
@@ -2664,6 +2742,49 @@ namespace VSItemTooltips
                 MelonLogger.Warning($"[AddPassiveEvo] Error: {ex.Message}");
             }
 
+            // Also include this passive's own evolution if it has one
+            // (e.g., Shadow Pinion is used as a passive by other weapons AND has its own evolution)
+            try
+            {
+                var ownData = GetWeaponData(passiveType);
+                if (ownData != null)
+                {
+                    string ownEvoInto = GetPropertyValue<string>(ownData, "evoInto");
+                    if (!string.IsNullOrEmpty(ownEvoInto))
+                    {
+                        var ownSynergyProp = ownData.GetType().GetProperty("evoSynergy");
+                        var ownSynergy = ownSynergyProp?.GetValue(ownData) as Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<WeaponType>;
+                        if (ownSynergy != null && System.Enum.TryParse<WeaponType>(ownEvoInto, out var ownEvoType))
+                        {
+                            var formula = new EvolutionFormula
+                            {
+                                BaseWeapon = passiveType,
+                                Passives = CollectPassiveRequirements(ownSynergy),
+                                EvolvedWeapon = ownEvoType,
+                                EvolvedSprite = GetSpriteForWeapon(ownEvoType),
+                                BaseSprite = GetSpriteForWeapon(passiveType),
+                                BaseName = GetLocalizedWeaponName(ownData, passiveType)
+                            };
+
+                            var evoData = GetWeaponData(ownEvoType);
+                            formula.EvolvedName = evoData != null ? GetLocalizedWeaponName(evoData, ownEvoType) : ownEvoInto;
+
+                            // Dedup by evolved weapon - if already in the list from the other direction, skip
+                            bool isDupe = false;
+                            foreach (var f in formulas)
+                            {
+                                if (f.EvolvedWeapon == formula.EvolvedWeapon)
+                                {
+                                    isDupe = true;
+                                    break;
+                                }
+                            }
+                            if (!isDupe) formulas.Add(formula);
+                        }
+                    }
+                }
+            }
+            catch { }
 
             if (formulas.Count == 0) return yOffset;
 
