@@ -333,6 +333,15 @@ namespace VSItemTooltips
         {
             // Reset caching state when a new scene loads
             triedEarlyCaching = false;
+
+            // Clear per-run state so arcanas and ownership reflect the new run
+            cachedGameSession = null;
+            cachedGameManager = null;
+            cachedAllArcanas = null;
+            panelCapturedWeapons.Clear();
+            panelCapturedItems.Clear();
+            arcanaDebugLogged = false;
+            arcanaWeaponDebugLogged.Clear();
         }
 
         private void TryEarlyCaching()
@@ -2333,16 +2342,18 @@ namespace VSItemTooltips
 
             bool hasOwnEvolution = !string.IsNullOrEmpty(evoInto);
 
-
-            // Check if this item is used as a passive requirement by OTHER weapons
+            // Check if this weapon is used as a passive requirement by OTHER weapons
             // This handles items like Empty Tome, Spinach, etc. that enable multiple evolutions
-            // We do this REGARDLESS of whether the item has its own evoInto
-            int passiveUseCount = CountPassiveUses(weaponType);
-
-            if (passiveUseCount > 0)
+            // Only treat as passive if this weapon doesn't have its own evolution —
+            // otherwise weapons like Shadow Pinion that appear in multi-weapon recipes
+            // would incorrectly show as passive items instead of their own evolution.
+            if (!hasOwnEvolution)
             {
-                // This is a passive item - show all evolutions it enables
-                return AddPassiveEvolutionSection(parent, font, weaponType, yOffset, maxWidth);
+                int passiveUseCount = CountPassiveUses(weaponType);
+                if (passiveUseCount > 0)
+                {
+                    return AddPassiveEvolutionSection(parent, font, weaponType, yOffset, maxWidth);
+                }
             }
 
             // Check if this weapon is the result of another weapon's evolution
