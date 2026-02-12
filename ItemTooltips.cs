@@ -3351,9 +3351,125 @@ namespace VSItemTooltips
             return false;
         }
 
-        // Create an icon with optional yellow circle background for owned items
+        // Cache for LevelUpFactory to avoid repeated reflection
+        private static object cachedLevelUpFactory = null;
+
+        /// <summary>
+        /// Checks if a weapon type has been banished by the player.
+        /// Accesses GameManager.LevelUpFactory.BanishedWeapons via reflection.
+        /// </summary>
+        private static bool IsWeaponBanned(WeaponType weaponType)
+        {
+            try
+            {
+                var gameMgr = GetGameManager();
+                if (gameMgr == null) return false;
+
+                if (cachedLevelUpFactory == null)
+                {
+                    var factoryProp = gameMgr.GetType().GetProperty("LevelUpFactory",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (factoryProp == null) return false;
+                    cachedLevelUpFactory = factoryProp.GetValue(gameMgr);
+                }
+                if (cachedLevelUpFactory == null) return false;
+
+                var banishedProp = cachedLevelUpFactory.GetType().GetProperty("BanishedWeapons",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (banishedProp == null) return false;
+
+                var banishedWeapons = banishedProp.GetValue(cachedLevelUpFactory);
+                if (banishedWeapons == null) return false;
+
+                // Check if it contains the weapon type
+                var containsMethod = banishedWeapons.GetType().GetMethod("Contains");
+                if (containsMethod != null)
+                {
+                    return (bool)containsMethod.Invoke(banishedWeapons, new object[] { weaponType });
+                }
+
+                // Fallback: iterate with Count + Item
+                var countProp = banishedWeapons.GetType().GetProperty("Count");
+                var indexer = banishedWeapons.GetType().GetProperty("Item");
+                if (countProp == null || indexer == null) return false;
+
+                int count = (int)countProp.GetValue(banishedWeapons);
+                string searchStr = weaponType.ToString();
+
+                for (int i = 0; i < count; i++)
+                {
+                    var item = indexer.GetValue(banishedWeapons, new object[] { i });
+                    if (item != null && item.ToString() == searchStr)
+                        return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if an item type has been banished by the player.
+        /// Accesses GameManager.LevelUpFactory.BanishedPowerUps via reflection.
+        /// </summary>
+        private static bool IsItemBanned(ItemType itemType)
+        {
+            try
+            {
+                var gameMgr = GetGameManager();
+                if (gameMgr == null) return false;
+
+                if (cachedLevelUpFactory == null)
+                {
+                    var factoryProp = gameMgr.GetType().GetProperty("LevelUpFactory",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (factoryProp == null) return false;
+                    cachedLevelUpFactory = factoryProp.GetValue(gameMgr);
+                }
+                if (cachedLevelUpFactory == null) return false;
+
+                // Try BanishedPowerUps first, then BanishedItems
+                string[] propNames = { "BanishedPowerUps", "BanishedItems" };
+                foreach (var propName in propNames)
+                {
+                    var banishedProp = cachedLevelUpFactory.GetType().GetProperty(propName,
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (banishedProp == null) continue;
+
+                    var banishedItems = banishedProp.GetValue(cachedLevelUpFactory);
+                    if (banishedItems == null) continue;
+
+                    var containsMethod = banishedItems.GetType().GetMethod("Contains");
+                    if (containsMethod != null)
+                    {
+                        try { return (bool)containsMethod.Invoke(banishedItems, new object[] { itemType }); }
+                        catch { }
+                    }
+
+                    // Fallback: iterate
+                    var countProp = banishedItems.GetType().GetProperty("Count");
+                    var indexer = banishedItems.GetType().GetProperty("Item");
+                    if (countProp == null || indexer == null) continue;
+
+                    int count = (int)countProp.GetValue(banishedItems);
+                    string searchStr = itemType.ToString();
+
+                    for (int i = 0; i < count; i++)
+                    {
+                        var item = indexer.GetValue(banishedItems, new object[] { i });
+                        if (item != null && item.ToString() == searchStr)
+                            return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        // Create an icon with optional yellow circle background for owned items and red X for banned
         private static UnityEngine.GameObject CreateFormulaIcon(UnityEngine.Transform parent, string name,
-            UnityEngine.Sprite sprite, bool isOwned, float size, float x, float y)
+            UnityEngine.Sprite sprite, bool isOwned, bool isBanned, float size, float x, float y)
         {
             var container = new UnityEngine.GameObject(name);
             container.transform.SetParent(parent, false);
@@ -3399,6 +3515,26 @@ namespace VSItemTooltips
                 iconRect.anchorMax = UnityEngine.Vector2.one;
                 iconRect.offsetMin = UnityEngine.Vector2.zero;
                 iconRect.offsetMax = UnityEngine.Vector2.zero;
+            }
+
+            // Red X overlay for banned items
+            if (isBanned)
+            {
+                // Two crossing red bars rotated ±45°
+                for (int barIdx = 0; barIdx < 2; barIdx++)
+                {
+                    var barObj = new UnityEngine.GameObject(barIdx == 0 ? "BannedBar1" : "BannedBar2");
+                    barObj.transform.SetParent(container.transform, false);
+                    var barImage = barObj.AddComponent<UnityEngine.UI.Image>();
+                    barImage.color = new UnityEngine.Color(1f, 0.15f, 0.15f, 0.9f);
+                    barImage.raycastTarget = false;
+                    var barRect = barObj.GetComponent<UnityEngine.RectTransform>();
+                    barRect.anchorMin = new UnityEngine.Vector2(0.5f, 0.5f);
+                    barRect.anchorMax = new UnityEngine.Vector2(0.5f, 0.5f);
+                    barRect.pivot = new UnityEngine.Vector2(0.5f, 0.5f);
+                    barRect.sizeDelta = new UnityEngine.Vector2(size * 1.2f, size * 0.15f);
+                    barRect.localRotation = UnityEngine.Quaternion.Euler(0f, 0f, barIdx == 0 ? 45f : -45f);
+                }
             }
 
             return container;
@@ -3573,7 +3709,9 @@ namespace VSItemTooltips
                 xOffset += 22f;
 
                 // Passive icon (with ownership highlight)
-                var passiveIcon = CreateFormulaIcon(parent, $"PassiveIcon{i}", passive.Sprite, passive.Owned, iconSize, xOffset, yOffset);
+                bool passiveBanned = passive.WeaponType.HasValue ? IsWeaponBanned(passive.WeaponType.Value) :
+                    passive.ItemType.HasValue ? IsItemBanned(passive.ItemType.Value) : false;
+                var passiveIcon = CreateFormulaIcon(parent, $"PassiveIcon{i}", passive.Sprite, passive.Owned, passiveBanned, iconSize, xOffset, yOffset);
                 if (passive.WeaponType.HasValue)
                     AddHoverToGameObject(passiveIcon, passive.WeaponType.Value, null, useClick: true);
                 else if (passive.ItemType.HasValue)
@@ -3609,7 +3747,8 @@ namespace VSItemTooltips
             xOffset += 26f;
 
             // Evolved weapon icon (no highlight - only ingredients get highlighted)
-            var evoIcon = CreateFormulaIcon(parent, "EvoIcon", evoSprite, false, iconSize, xOffset, yOffset);
+            bool evoBanned = evoType.HasValue ? IsWeaponBanned(evoType.Value) : false;
+            var evoIcon = CreateFormulaIcon(parent, "EvoIcon", evoSprite, false, evoBanned, iconSize, xOffset, yOffset);
             if (evoType.HasValue)
                 AddHoverToGameObject(evoIcon, evoType.Value, null, useClick: true);
 
@@ -3702,7 +3841,7 @@ namespace VSItemTooltips
 
             // Base weapon icon
             bool ownsWeapon = PlayerOwnsWeapon(formula.BaseWeapon);
-            var weaponIcon = CreateFormulaIcon(parent, "EvolvedFromBase", formula.BaseSprite, ownsWeapon, iconSize, xOffset, yOffset);
+            var weaponIcon = CreateFormulaIcon(parent, "EvolvedFromBase", formula.BaseSprite, ownsWeapon, IsWeaponBanned(formula.BaseWeapon), iconSize, xOffset, yOffset);
             AddHoverToGameObject(weaponIcon, formula.BaseWeapon, null, useClick: true);
             xOffset += iconSize + 3f;
 
@@ -3725,7 +3864,9 @@ namespace VSItemTooltips
                     xOffset += 14f;
 
                     // Passive icon
-                    var passiveIcon = CreateFormulaIcon(parent, $"EvolvedFromPassive{p}", passive.Sprite, passive.Owned, iconSize, xOffset, yOffset);
+                    bool efPassiveBanned = passive.WeaponType.HasValue ? IsWeaponBanned(passive.WeaponType.Value) :
+                        passive.ItemType.HasValue ? IsItemBanned(passive.ItemType.Value) : false;
+                    var passiveIcon = CreateFormulaIcon(parent, $"EvolvedFromPassive{p}", passive.Sprite, passive.Owned, efPassiveBanned, iconSize, xOffset, yOffset);
                     if (passive.WeaponType.HasValue)
                         AddHoverToGameObject(passiveIcon, passive.WeaponType.Value, null, useClick: true);
                     else if (passive.ItemType.HasValue)
@@ -3926,7 +4067,7 @@ namespace VSItemTooltips
                 bool ownsWeapon = PlayerOwnsWeapon(formula.BaseWeapon);
 
                 // Base weapon icon
-                var weaponIcon = CreateFormulaIcon(parent, $"Weapon{formulaIndex}", formula.BaseSprite, ownsWeapon, iconSize, xOffset, yOffset);
+                var weaponIcon = CreateFormulaIcon(parent, $"Weapon{formulaIndex}", formula.BaseSprite, ownsWeapon, IsWeaponBanned(formula.BaseWeapon), iconSize, xOffset, yOffset);
                 AddHoverToGameObject(weaponIcon, formula.BaseWeapon, null, useClick: true);
                 xOffset += iconSize + 3f;
 
@@ -3953,7 +4094,9 @@ namespace VSItemTooltips
                         xOffset += 14f;
 
                         // Passive icon
-                        var passiveIcon = CreateFormulaIcon(parent, $"Passive{formulaIndex}_{p}", passive.Sprite, passive.Owned, iconSize, xOffset, yOffset);
+                        bool peBanned = passive.WeaponType.HasValue ? IsWeaponBanned(passive.WeaponType.Value) :
+                            passive.ItemType.HasValue ? IsItemBanned(passive.ItemType.Value) : false;
+                        var passiveIcon = CreateFormulaIcon(parent, $"Passive{formulaIndex}_{p}", passive.Sprite, passive.Owned, peBanned, iconSize, xOffset, yOffset);
                         if (passive.WeaponType.HasValue)
                             AddHoverToGameObject(passiveIcon, passive.WeaponType.Value, null, useClick: true);
                         else if (passive.ItemType.HasValue)
@@ -3990,7 +4133,7 @@ namespace VSItemTooltips
                 xOffset += 20f;
 
                 // Evolved weapon icon
-                var evoIcon = CreateFormulaIcon(parent, $"Evo{formulaIndex}", formula.EvolvedSprite, false, iconSize, xOffset, yOffset);
+                var evoIcon = CreateFormulaIcon(parent, $"Evo{formulaIndex}", formula.EvolvedSprite, false, IsWeaponBanned(formula.EvolvedWeapon), iconSize, xOffset, yOffset);
                 AddHoverToGameObject(evoIcon, formula.EvolvedWeapon, null, useClick: true);
 
                 yOffset -= rowHeight;
@@ -4142,7 +4285,7 @@ namespace VSItemTooltips
                 bool ownsWeapon = PlayerOwnsWeapon(formula.BaseWeapon);
 
                 // Base weapon icon
-                var weaponIcon = CreateFormulaIcon(parent, $"Weapon{formulaIndex}", formula.BaseSprite, ownsWeapon, iconSize, xOffset, yOffset);
+                var weaponIcon = CreateFormulaIcon(parent, $"Weapon{formulaIndex}", formula.BaseSprite, ownsWeapon, IsWeaponBanned(formula.BaseWeapon), iconSize, xOffset, yOffset);
                 AddHoverToGameObject(weaponIcon, formula.BaseWeapon, null, useClick: true);
                 xOffset += iconSize + 3f;
 
@@ -4165,7 +4308,9 @@ namespace VSItemTooltips
                         xOffset += 14f;
 
                         // Passive icon
-                        var passiveIcon = CreateFormulaIcon(parent, $"Passive{formulaIndex}_{p}", passive.Sprite, passive.Owned, iconSize, xOffset, yOffset);
+                        bool ieBanned = passive.WeaponType.HasValue ? IsWeaponBanned(passive.WeaponType.Value) :
+                            passive.ItemType.HasValue ? IsItemBanned(passive.ItemType.Value) : false;
+                        var passiveIcon = CreateFormulaIcon(parent, $"Passive{formulaIndex}_{p}", passive.Sprite, passive.Owned, ieBanned, iconSize, xOffset, yOffset);
                         if (passive.WeaponType.HasValue)
                             AddHoverToGameObject(passiveIcon, passive.WeaponType.Value, null, useClick: true);
                         else if (passive.ItemType.HasValue)
@@ -4202,7 +4347,7 @@ namespace VSItemTooltips
                 xOffset += 20f;
 
                 // Evolved weapon icon
-                var evoIcon = CreateFormulaIcon(parent, $"Evo{formulaIndex}", formula.EvolvedSprite, false, iconSize, xOffset, yOffset);
+                var evoIcon = CreateFormulaIcon(parent, $"Evo{formulaIndex}", formula.EvolvedSprite, false, IsWeaponBanned(formula.EvolvedWeapon), iconSize, xOffset, yOffset);
                 AddHoverToGameObject(evoIcon, formula.EvolvedWeapon, null, useClick: true);
                 xOffset += iconSize + 6f;
 
@@ -4247,7 +4392,7 @@ namespace VSItemTooltips
             for (int i = 0; i < arcanas.Count; i++)
             {
                 var arcana = arcanas[i];
-                var arcanaIcon = CreateFormulaIcon(parent, $"ArcanaIcon{i}", arcana.Sprite, false, iconSize, xOffset, yOffset);
+                var arcanaIcon = CreateFormulaIcon(parent, $"ArcanaIcon{i}", arcana.Sprite, false, false, iconSize, xOffset, yOffset);
                 AddArcanaHoverToGameObject(arcanaIcon, arcana.ArcanaData);
 
                 // Add arcana name next to icon, vertically centered
@@ -4474,7 +4619,7 @@ namespace VSItemTooltips
                         float x = Padding + col * (iconSize + iconSpacing);
                         bool owned = PlayerOwnsWeapon(wt);
                         var sprite = GetSpriteForWeapon(wt);
-                        var icon = CreateFormulaIcon(popup.transform, $"AffectedWeapon{itemIndex}", sprite, owned, iconSize, x, yOffset);
+                        var icon = CreateFormulaIcon(popup.transform, $"AffectedWeapon{itemIndex}", sprite, owned, IsWeaponBanned(wt), iconSize, x, yOffset);
                         AddHoverToGameObject(icon, wt, null, useClick: true);
 
                         col++;
@@ -4492,7 +4637,7 @@ namespace VSItemTooltips
                         float x = Padding + col * (iconSize + iconSpacing);
                         bool owned = PlayerOwnsItem(it);
                         var sprite = GetSpriteForItem(it);
-                        var icon = CreateFormulaIcon(popup.transform, $"AffectedItem{itemIndex}", sprite, owned, iconSize, x, yOffset);
+                        var icon = CreateFormulaIcon(popup.transform, $"AffectedItem{itemIndex}", sprite, owned, IsItemBanned(it), iconSize, x, yOffset);
                         AddHoverToGameObject(icon, null, it, useClick: true);
 
                         col++;
