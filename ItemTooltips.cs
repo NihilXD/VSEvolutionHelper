@@ -74,6 +74,28 @@ namespace VSItemTooltips
         private static int currentCollectionHoverId = -1;
         private static UnityEngine.GameObject collectionPopup = null;
 
+        // Controller/keyboard support
+        private static bool usingController = false;
+        private static UnityEngine.Vector3 lastMousePosition = UnityEngine.Vector3.zero;
+        private static UnityEngine.GameObject lastSelectedObject = null;
+        private static float dwellStartTime = 0f;
+        private static readonly float DwellDelay = 0.5f;
+        private static UnityEngine.GameObject dwellTarget = null;
+        private static bool passivePopupShown = false;
+        private static bool interactiveMode = false;
+        private static List<UnityEngine.GameObject> formulaIcons = new List<UnityEngine.GameObject>();
+        private static int currentFormulaIndex = -1;
+        private static UnityEngine.GameObject interactiveHighlight = null;
+        private static UnityEngine.GameObject preDwellSelection = null; // what was selected before we showed popup
+        private static Dictionary<int, (WeaponType? weapon, ItemType? item)> formulaIconData =
+            new Dictionary<int, (WeaponType?, ItemType?)>();
+        private static UnityEngine.GameObject interactivePopup = null; // which popup interactive mode is on
+        private static UnityEngine.GameObject cachedNavigatorArrows = null; // game's ButtonNavigator arrows to hide
+        // Collection popup back-stack (tracks history for Backspace navigation)
+        private static List<(WeaponType? weapon, ItemType? item, object arcana)> collectionPopupBackStack =
+            new List<(WeaponType?, ItemType?, object)>();
+        private static (WeaponType? weapon, ItemType? item, object arcana) currentCollectionPopupData;
+
         // Styling
         private static readonly UnityEngine.Color PopupBgColor = new UnityEngine.Color(0.08f, 0.08f, 0.12f, 0.98f);
         private static readonly UnityEngine.Color PopupBorderColor = new UnityEngine.Color(0.5f, 0.5f, 0.7f, 1f);
@@ -464,6 +486,9 @@ namespace VSItemTooltips
                 TryEarlyCaching();
             }
 
+            // Detect input mode (mouse vs controller/keyboard)
+            DetectInputMode();
+
             // Detect ESC key press to find pause menu
             if (UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.Escape))
             {
@@ -527,6 +552,7 @@ namespace VSItemTooltips
             {
                 HidePopup();
                 ClearTrackedIcons();
+                ResetControllerState();
                 loggedScanStatus = false; // Reset so we can warn again if needed
                 loggedScanResults = false;
                 scannedPauseView = false; // Rescan pause view next time
@@ -550,11 +576,35 @@ namespace VSItemTooltips
             // Collection screen hover detection (runs even when not in-game)
             if (!isGamePaused && collectionIcons.Count > 0)
             {
-                UpdateCollectionHover();
+                if (usingController)
+                    UpdateControllerCollectionDwell();
+                else
+                    UpdateCollectionHover();
+            }
+
+            // Controller/keyboard support: back button and interactive mode (works in both paused and collection)
+            if (usingController)
+            {
+                HandleBackButton();
+                UpdateInteractiveMode();
+
+                // Interact button: enter interactive mode on passive popup
+                if (IsInteractButtonPressed() && passivePopupShown && !interactiveMode)
+                {
+                    MelonLogger.Msg($"[Controller] Entering interactive mode (popupStack={popupStack.Count}, collectionPopup={collectionPopup != null})");
+                    EnterInteractiveMode();
+                    MelonLogger.Msg($"[Controller] EnterInteractiveMode result: interactiveMode={interactiveMode}, formulaIcons={formulaIcons.Count}");
+                }
             }
 
             // Only process when game is paused
             if (!isGamePaused) return;
+
+            // Controller/keyboard dwell detection for paused screens
+            if (usingController)
+            {
+                UpdateControllerDwell();
+            }
 
             // Throttle scanning
             float currentTime = UnityEngine.Time.unscaledTime;
@@ -2012,6 +2062,747 @@ namespace VSItemTooltips
             catch (Exception ex)
             {
                 MelonLogger.Error($"Error caching data manager: {ex}");
+            }
+        }
+
+        #endregion
+
+        #region Controller/Keyboard Support
+
+        /// <summary>
+        /// Detects whether the player is using mouse or controller/keyboard by tracking
+        /// mouse movement and EventSystem selection changes.
+        /// </summary>
+        private static void DetectInputMode()
+        {
+            var mousePos = UnityEngine.Input.mousePosition;
+            bool mouseMoved = (mousePos - lastMousePosition).sqrMagnitude > 1f;
+            lastMousePosition = mousePos;
+
+            if (mouseMoved)
+            {
+                if (usingController)
+                {
+                    usingController = false;
+                    ExitInteractiveMode();
+                    dwellTarget = null;
+                    passivePopupShown = false;
+                }
+                return;
+            }
+
+            // Check if EventSystem selection changed (indicates controller/keyboard navigation)
+            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+            if (eventSystem == null) return;
+
+            var currentSelected = eventSystem.currentSelectedGameObject;
+            if (currentSelected != lastSelectedObject && currentSelected != null)
+            {
+                // Selection changed without mouse movement = controller/keyboard input
+                if (!usingController)
+                {
+                    usingController = true;
+                    MelonLogger.Msg($"[Controller] Switched to controller mode (selected: {currentSelected.name})");
+                }
+            }
+            lastSelectedObject = currentSelected;
+        }
+
+        /// <summary>
+        /// Handles controller/keyboard dwell detection for paused screens.
+        /// When a tracked icon is focused for DwellDelay seconds, shows a passive popup.
+        /// </summary>
+        private static void UpdateControllerDwell()
+        {
+            // Don't process dwell changes while in interactive mode
+            if (interactiveMode) return;
+
+            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+            if (eventSystem == null) return;
+
+            var selected = eventSystem.currentSelectedGameObject;
+            if (selected == null)
+            {
+                dwellTarget = null;
+                return;
+            }
+
+            // If selection changed
+            if (selected != dwellTarget)
+            {
+                dwellTarget = selected;
+                dwellStartTime = UnityEngine.Time.unscaledTime;
+
+                // If we had a passive popup and selection moved outside of it, close it
+                if (passivePopupShown && !interactiveMode)
+                {
+                    bool insidePopup = false;
+                    foreach (var popup in popupStack)
+                    {
+                        if (popup != null && selected.transform.IsChildOf(popup.transform))
+                        {
+                            insidePopup = true;
+                            break;
+                        }
+                    }
+                    if (!insidePopup)
+                    {
+                        HideAllPopups();
+                        passivePopupShown = false;
+                    }
+                }
+                return;
+            }
+
+            // Same selection - check if dwell time elapsed
+            if (passivePopupShown) return; // Already showing a popup for this dwell
+
+            float elapsed = UnityEngine.Time.unscaledTime - dwellStartTime;
+            if (elapsed < DwellDelay) return;
+
+            // Dwell time reached - try to find a tracked icon for this selection
+            var icon = FindTrackedIconForObject(selected);
+            if (icon != null)
+            {
+                MelonLogger.Msg($"[Controller] Dwell triggered on {selected.name} → weapon={icon.Value.weapon}, item={icon.Value.item}");
+                preDwellSelection = selected;
+                ShowItemPopup(selected.transform, icon.Value.weapon, icon.Value.item);
+                passivePopupShown = true;
+            }
+        }
+
+        /// <summary>
+        /// Handles controller/keyboard dwell for the collection screen (not in-game).
+        /// </summary>
+        private static void UpdateControllerCollectionDwell()
+        {
+            // Don't process dwell changes while in interactive mode
+            if (interactiveMode) return;
+
+            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+            if (eventSystem == null) return;
+
+            var selected = eventSystem.currentSelectedGameObject;
+            if (selected == null)
+            {
+                dwellTarget = null;
+                return;
+            }
+
+            if (selected != dwellTarget)
+            {
+                dwellTarget = selected;
+                dwellStartTime = UnityEngine.Time.unscaledTime;
+                // Selection changed — allow new dwell popup
+                passivePopupShown = false;
+                return;
+            }
+
+            // Check dwell
+            float elapsed = UnityEngine.Time.unscaledTime - dwellStartTime;
+            if (elapsed < DwellDelay) return;
+            if (passivePopupShown) return;
+
+            // Look up in collection icons
+            int selectedId = selected.GetInstanceID();
+            if (collectionIcons.TryGetValue(selectedId, out var iconData))
+            {
+                MelonLogger.Msg($"[Controller] Collection dwell on {selected.name} → weapon={iconData.weapon}, item={iconData.item}");
+                preDwellSelection = selected;
+                ShowCollectionPopup(iconData.weapon, iconData.item, iconData.arcanaType);
+                passivePopupShown = true;
+            }
+            else
+            {
+                // Walk parents to find a match (icon might be a child of the tracked object)
+                var parent = selected.transform.parent;
+                while (parent != null)
+                {
+                    int parentId = parent.gameObject.GetInstanceID();
+                    if (collectionIcons.TryGetValue(parentId, out var parentData))
+                    {
+                        MelonLogger.Msg($"[Controller] Collection dwell (via parent {parent.name}) → weapon={parentData.weapon}, item={parentData.item}");
+                        preDwellSelection = selected;
+                        ShowCollectionPopup(parentData.weapon, parentData.item, parentData.arcanaType);
+                        passivePopupShown = true;
+                        break;
+                    }
+                    parent = parent.parent;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Finds a tracked icon (weapon/item) for the given GameObject, checking the object itself
+        /// and walking up its parents.
+        /// </summary>
+        private static (WeaponType? weapon, ItemType? item)? FindTrackedIconForObject(UnityEngine.GameObject go)
+        {
+            if (go == null) return null;
+
+            // Check direct match in trackedIcons
+            int id = go.GetInstanceID();
+            if (trackedIcons.TryGetValue(id, out var tracked))
+            {
+                return (tracked.WeaponType, tracked.ItemType);
+            }
+
+            // Check uiToWeaponType / uiToItemType
+            if (uiToWeaponType.TryGetValue(id, out var wt))
+                return (wt, null);
+            if (uiToItemType.TryGetValue(id, out var it))
+                return (null, it);
+
+            // Walk parents
+            var parent = go.transform.parent;
+            while (parent != null)
+            {
+                int parentId = parent.gameObject.GetInstanceID();
+                if (trackedIcons.TryGetValue(parentId, out var parentTracked))
+                    return (parentTracked.WeaponType, parentTracked.ItemType);
+                if (uiToWeaponType.TryGetValue(parentId, out var pwt))
+                    return (pwt, null);
+                if (uiToItemType.TryGetValue(parentId, out var pit))
+                    return (null, pit);
+                parent = parent.parent;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Checks if the interact button was pressed (Enter, E, or controller A/Cross).
+        /// </summary>
+        private static bool IsInteractButtonPressed()
+        {
+            return UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.Tab) ||
+                   UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.JoystickButton3); // Y/Triangle
+        }
+
+        /// <summary>
+        /// Checks if the back button was pressed (Backspace or controller B/Circle).
+        /// Note: Escape is handled separately since the game already uses it.
+        /// </summary>
+        private static bool IsBackButtonPressed()
+        {
+            return UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.Backspace) ||
+                   UnityEngine.Input.GetKeyDown(UnityEngine.KeyCode.JoystickButton1);
+        }
+
+        /// <summary>
+        /// Sets up explicit Navigation links between formula icons, using Y position to
+        /// determine rows. Left/right navigates within a row, up/down between rows.
+        /// </summary>
+        private static void SetupFormulaNavigation()
+        {
+            if (formulaIcons.Count == 0) return;
+
+            // Group icons into rows by Y position (icons at same Y are in same row)
+            // Use a tolerance of 5 units for floating point imprecision
+            var rows = new List<List<int>>(); // each row is a list of indices into formulaIcons
+            var rowYValues = new List<float>();
+
+            for (int i = 0; i < formulaIcons.Count; i++)
+            {
+                if (formulaIcons[i] == null) continue;
+                float y = formulaIcons[i].transform.localPosition.y;
+
+                int rowIndex = -1;
+                for (int r = 0; r < rowYValues.Count; r++)
+                {
+                    if (UnityEngine.Mathf.Abs(y - rowYValues[r]) < 5f)
+                    {
+                        rowIndex = r;
+                        break;
+                    }
+                }
+
+                if (rowIndex < 0)
+                {
+                    rowIndex = rows.Count;
+                    rows.Add(new List<int>());
+                    rowYValues.Add(y);
+                }
+                rows[rowIndex].Add(i);
+            }
+
+            // Sort rows top-to-bottom (highest Y first in Unity UI)
+            var sortedRows = new List<(float y, List<int> indices)>();
+            for (int r = 0; r < rows.Count; r++)
+                sortedRows.Add((rowYValues[r], rows[r]));
+            sortedRows.Sort((a, b) => b.y.CompareTo(a.y));
+
+            // Sort icons within each row left-to-right (lowest X first)
+            foreach (var row in sortedRows)
+            {
+                row.indices.Sort((a, b) =>
+                    formulaIcons[a].transform.localPosition.x.CompareTo(
+                    formulaIcons[b].transform.localPosition.x));
+            }
+
+            // Build a lookup: for each icon index, which row and column is it in?
+            var iconRowCol = new Dictionary<int, (int row, int col)>();
+            for (int r = 0; r < sortedRows.Count; r++)
+            {
+                for (int c = 0; c < sortedRows[r].indices.Count; c++)
+                {
+                    iconRowCol[sortedRows[r].indices[c]] = (r, c);
+                }
+            }
+
+            // Set up navigation for each icon
+            for (int i = 0; i < formulaIcons.Count; i++)
+            {
+                var btn = formulaIcons[i].GetComponent<UnityEngine.UI.Button>();
+                if (btn == null || !iconRowCol.ContainsKey(i)) continue;
+
+                var (row, col) = iconRowCol[i];
+                var nav = new UnityEngine.UI.Navigation();
+                nav.mode = UnityEngine.UI.Navigation.Mode.Explicit;
+
+                // Left: previous in same row
+                if (col > 0)
+                {
+                    var leftIdx = sortedRows[row].indices[col - 1];
+                    var leftBtn = formulaIcons[leftIdx].GetComponent<UnityEngine.UI.Selectable>();
+                    if (leftBtn != null) nav.selectOnLeft = leftBtn;
+                }
+
+                // Right: next in same row
+                if (col < sortedRows[row].indices.Count - 1)
+                {
+                    var rightIdx = sortedRows[row].indices[col + 1];
+                    var rightBtn = formulaIcons[rightIdx].GetComponent<UnityEngine.UI.Selectable>();
+                    if (rightBtn != null) nav.selectOnRight = rightBtn;
+                }
+
+                // Up: same column (or closest) in row above
+                if (row > 0)
+                {
+                    var aboveRow = sortedRows[row - 1].indices;
+                    int aboveCol = System.Math.Min(col, aboveRow.Count - 1);
+                    var upBtn = formulaIcons[aboveRow[aboveCol]].GetComponent<UnityEngine.UI.Selectable>();
+                    if (upBtn != null) nav.selectOnUp = upBtn;
+                }
+
+                // Down: same column (or closest) in row below
+                if (row < sortedRows.Count - 1)
+                {
+                    var belowRow = sortedRows[row + 1].indices;
+                    int belowCol = System.Math.Min(col, belowRow.Count - 1);
+                    var downBtn = formulaIcons[belowRow[belowCol]].GetComponent<UnityEngine.UI.Selectable>();
+                    if (downBtn != null) nav.selectOnDown = downBtn;
+                }
+
+                btn.navigation = nav;
+            }
+
+            MelonLogger.Msg($"[Controller] Navigation: {formulaIcons.Count} icons in {sortedRows.Count} rows");
+        }
+
+        /// <summary>
+        /// Enters interactive mode on the current top popup, allowing navigation of formula icons.
+        /// </summary>
+        private static void EnterInteractiveMode()
+        {
+            // Use popup stack if available, otherwise try collection popup
+            UnityEngine.GameObject topPopup = null;
+            if (popupStack.Count > 0)
+                topPopup = popupStack[popupStack.Count - 1];
+            else if (collectionPopup != null)
+                topPopup = collectionPopup;
+
+            if (topPopup == null) return;
+
+            interactiveMode = true;
+            interactivePopup = topPopup;
+            CollectFormulaIcons(topPopup);
+
+            if (formulaIcons.Count > 0)
+            {
+                SetupFormulaNavigation();
+
+                // Focus the first formula icon — this steals focus from the game's UI
+                currentFormulaIndex = 0;
+                var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+                if (eventSystem != null)
+                {
+                    eventSystem.SetSelectedGameObject(formulaIcons[0]);
+                }
+                SetFormulaHighlight(0);
+                MelonLogger.Msg($"[Controller] Interactive mode: {formulaIcons.Count} icons, focused first icon");
+
+                // Hide the game's navigator arrows while in interactive mode
+                HideNavigatorArrows();
+            }
+            else
+            {
+                interactiveMode = false;
+                interactivePopup = null;
+            }
+        }
+
+        /// <summary>
+        /// Exits interactive mode, restoring focus to the underlying UI element.
+        /// </summary>
+        private static void ExitInteractiveMode()
+        {
+            // Reset navigation on formula icons before clearing
+            foreach (var icon in formulaIcons)
+            {
+                if (icon == null) continue;
+                var btn = icon.GetComponent<UnityEngine.UI.Button>();
+                if (btn != null)
+                {
+                    var nav = btn.navigation;
+                    nav.mode = UnityEngine.UI.Navigation.Mode.None;
+                    btn.navigation = nav;
+                }
+            }
+
+            interactiveMode = false;
+            interactivePopup = null;
+            currentFormulaIndex = -1;
+            formulaIcons.Clear();
+
+            if (interactiveHighlight != null)
+            {
+                UnityEngine.Object.Destroy(interactiveHighlight);
+                interactiveHighlight = null;
+            }
+
+            // Restore the game's navigator arrows
+            ShowNavigatorArrows();
+
+            // Restore focus to the element that was selected before dwell
+            if (preDwellSelection != null)
+            {
+                var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+                if (eventSystem != null)
+                {
+                    MelonLogger.Msg($"[Controller] Exiting interactive mode, restoring focus to {preDwellSelection.name}");
+                    eventSystem.SetSelectedGameObject(preDwellSelection);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Collects all formula icons from a popup that have associated weapon/item data.
+        /// </summary>
+        private static void CollectFormulaIcons(UnityEngine.GameObject popup)
+        {
+            formulaIcons.Clear();
+
+            // Walk all children with EventTrigger (formula icons have them for click handling)
+            var triggers = popup.GetComponentsInChildren<UnityEngine.EventSystems.EventTrigger>(false);
+            foreach (var trigger in triggers)
+            {
+                if (trigger.gameObject == popup) continue; // Skip the popup itself
+
+                int iconId = trigger.gameObject.GetInstanceID();
+                if (formulaIconData.ContainsKey(iconId))
+                {
+                    formulaIcons.Add(trigger.gameObject);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sets the visual highlight on the formula icon at the given index.
+        /// </summary>
+        private static void SetFormulaHighlight(int index)
+        {
+            // Remove old highlight
+            if (interactiveHighlight != null)
+            {
+                UnityEngine.Object.Destroy(interactiveHighlight);
+                interactiveHighlight = null;
+            }
+
+            if (index < 0 || index >= formulaIcons.Count) return;
+
+            var target = formulaIcons[index];
+            if (target == null) return;
+
+            // Create a highlight frame around the icon
+            interactiveHighlight = new UnityEngine.GameObject("ControllerHighlight");
+            interactiveHighlight.transform.SetParent(target.transform, false);
+
+            var highlightRect = interactiveHighlight.AddComponent<UnityEngine.RectTransform>();
+            highlightRect.anchorMin = UnityEngine.Vector2.zero;
+            highlightRect.anchorMax = UnityEngine.Vector2.one;
+            highlightRect.offsetMin = new UnityEngine.Vector2(-3f, -3f);
+            highlightRect.offsetMax = new UnityEngine.Vector2(3f, 3f);
+
+            var highlightImage = interactiveHighlight.AddComponent<UnityEngine.UI.Image>();
+            highlightImage.color = new UnityEngine.Color(0f, 0.9f, 1f, 0.25f); // Semi-transparent cyan fill
+            highlightImage.raycastTarget = false;
+
+            var outline = interactiveHighlight.AddComponent<UnityEngine.UI.Outline>();
+            outline.effectColor = new UnityEngine.Color(0f, 0.9f, 1f, 1f); // Cyan border
+            outline.effectDistance = new UnityEngine.Vector2(2f, 2f);
+        }
+
+        /// <summary>
+        /// Monitors interactive mode state. Navigation and activation are handled by
+        /// Button components + EventSystem natively. This tracks which formula icon
+        /// is selected and moves the visual highlight. Also handles popup replacement
+        /// (when a formula icon is activated, the popup is replaced with a new one).
+        /// </summary>
+        private static void UpdateInteractiveMode()
+        {
+            if (!interactiveMode) return;
+
+            var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+            if (eventSystem == null) return;
+
+            var selected = eventSystem.currentSelectedGameObject;
+
+            // Check if formulaIcons are stale (popup was replaced by Button.onClick)
+            // This must happen BEFORE the null-selected check, because when the old popup is
+            // destroyed, the selected object (which was on that popup) becomes null too.
+            bool stale = formulaIcons.Count == 0;
+            if (!stale && formulaIcons[0] == null)
+                stale = true;
+
+            if (stale)
+            {
+                // Popup was replaced — try to re-enter interactive mode on the new popup
+                UnityEngine.GameObject newPopup = null;
+                if (popupStack.Count > 0)
+                    newPopup = popupStack[popupStack.Count - 1];
+                else if (collectionPopup != null)
+                    newPopup = collectionPopup;
+
+                if (newPopup != null)
+                {
+                    MelonLogger.Msg("[Controller] Popup replaced, re-entering interactive mode");
+                    CollectFormulaIcons(newPopup);
+                    if (formulaIcons.Count > 0)
+                    {
+                        SetupFormulaNavigation();
+                        currentFormulaIndex = 0;
+                        eventSystem.SetSelectedGameObject(formulaIcons[0]);
+                        SetFormulaHighlight(0);
+                        return;
+                    }
+                }
+                // Couldn't re-enter — exit
+                MelonLogger.Msg("[Controller] Popup replaced but no formula icons found, exiting interactive mode");
+                ExitInteractiveMode();
+                return;
+            }
+
+            // Check if a new popup was pushed on top (popupStack case — old popup still exists)
+            UnityEngine.GameObject currentTop = null;
+            if (popupStack.Count > 0)
+                currentTop = popupStack[popupStack.Count - 1];
+            else if (collectionPopup != null)
+                currentTop = collectionPopup;
+
+            if (currentTop != null && currentTop != interactivePopup)
+            {
+                MelonLogger.Msg("[Controller] New popup on top of stack, switching interactive mode");
+                // Clean up old navigation
+                foreach (var icon in formulaIcons)
+                {
+                    if (icon == null) continue;
+                    var btn = icon.GetComponent<UnityEngine.UI.Button>();
+                    if (btn != null)
+                    {
+                        var nav = btn.navigation;
+                        nav.mode = UnityEngine.UI.Navigation.Mode.None;
+                        btn.navigation = nav;
+                    }
+                }
+                if (interactiveHighlight != null)
+                {
+                    UnityEngine.Object.Destroy(interactiveHighlight);
+                    interactiveHighlight = null;
+                }
+
+                interactivePopup = currentTop;
+                CollectFormulaIcons(currentTop);
+                if (formulaIcons.Count > 0)
+                {
+                    SetupFormulaNavigation();
+                    currentFormulaIndex = 0;
+                    eventSystem.SetSelectedGameObject(formulaIcons[0]);
+                    SetFormulaHighlight(0);
+                    return;
+                }
+                else
+                {
+                    // New popup has no formula icons — exit interactive mode
+                    MelonLogger.Msg("[Controller] New popup has no formula icons, exiting interactive mode");
+                    ExitInteractiveMode();
+                    return;
+                }
+            }
+
+            // If nothing is selected and icons aren't stale, something else happened (e.g., Escape)
+            if (selected == null)
+            {
+                MelonLogger.Msg("[Controller] Auto-exiting interactive mode (nothing selected)");
+                ExitInteractiveMode();
+                return;
+            }
+
+            // Track which formula icon is selected and move highlight
+            for (int i = 0; i < formulaIcons.Count; i++)
+            {
+                if (formulaIcons[i] != null && selected == formulaIcons[i])
+                {
+                    if (i != currentFormulaIndex)
+                    {
+                        currentFormulaIndex = i;
+                        SetFormulaHighlight(i);
+                    }
+                    return; // Selection is on a formula icon — all good
+                }
+                // Also check if selected is a child of a formula icon
+                if (formulaIcons[i] != null && selected.transform.IsChildOf(formulaIcons[i].transform))
+                {
+                    if (i != currentFormulaIndex)
+                    {
+                        currentFormulaIndex = i;
+                        SetFormulaHighlight(i);
+                    }
+                    return;
+                }
+            }
+
+            // Selection is not on any formula icon — check if it's inside the popup
+            bool insidePopup = false;
+            foreach (var popup in popupStack)
+            {
+                if (popup != null && selected.transform.IsChildOf(popup.transform))
+                {
+                    insidePopup = true;
+                    break;
+                }
+            }
+            if (!insidePopup && collectionPopup != null && selected.transform.IsChildOf(collectionPopup.transform))
+            {
+                insidePopup = true;
+            }
+
+            if (!insidePopup)
+            {
+                MelonLogger.Msg($"[Controller] Auto-exiting interactive mode (selection moved to {selected.name})");
+                ExitInteractiveMode();
+            }
+        }
+
+        /// <summary>
+        /// Handles back button press for closing popup layers.
+        /// </summary>
+        private static void HandleBackButton()
+        {
+            if (!IsBackButtonPressed()) return;
+
+            // --- Collection popups: simple close, no back-stack navigation ---
+            if (collectionPopup != null && popupStack.Count == 0)
+            {
+                if (interactiveMode)
+                {
+                    MelonLogger.Msg("[Controller] Back: exiting interactive mode and closing collection popup");
+                    ExitInteractiveMode();
+                }
+                HideCollectionPopup();
+                passivePopupShown = false;
+                collectionPopupBackStack.Clear();
+                // Restore focus to the collection grid
+                if (preDwellSelection != null)
+                {
+                    var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+                    if (eventSystem != null)
+                        eventSystem.SetSelectedGameObject(preDwellSelection);
+                }
+                return;
+            }
+
+            // --- In-game popupStack: navigate back through layers ---
+            if (interactiveMode)
+            {
+                if (popupStack.Count > 1)
+                {
+                    // Close top popup, re-enter interactive mode on the one below
+                    MelonLogger.Msg($"[Controller] Back: closing top popup, {popupStack.Count - 1} remaining");
+                    ExitInteractiveMode();
+                    HideTopPopup();
+                    EnterInteractiveMode();
+                }
+                else
+                {
+                    // Only one popup left — exit interactive mode, keep popup as passive
+                    MelonLogger.Msg("[Controller] Back: exiting interactive mode (last popup)");
+                    ExitInteractiveMode();
+                    passivePopupShown = true;
+                }
+            }
+            else if (passivePopupShown && popupStack.Count > 0)
+            {
+                // Close the passive popup entirely
+                MelonLogger.Msg("[Controller] Back: closing passive popup");
+                HideAllPopups();
+                passivePopupShown = false;
+                // Restore focus
+                if (preDwellSelection != null)
+                {
+                    var eventSystem = UnityEngine.EventSystems.EventSystem.current;
+                    if (eventSystem != null)
+                        eventSystem.SetSelectedGameObject(preDwellSelection);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Resets all controller/keyboard state.
+        /// </summary>
+        private static void ResetControllerState()
+        {
+            usingController = false;
+            dwellTarget = null;
+            passivePopupShown = false;
+            interactiveMode = false;
+            interactivePopup = null;
+            formulaIcons.Clear();
+            currentFormulaIndex = -1;
+            preDwellSelection = null;
+            lastSelectedObject = null;
+            collectionPopupBackStack.Clear();
+            ShowNavigatorArrows();
+            if (interactiveHighlight != null)
+            {
+                UnityEngine.Object.Destroy(interactiveHighlight);
+                interactiveHighlight = null;
+            }
+        }
+
+        /// <summary>
+        /// Hides the game's floating navigator arrows (Safe Area/Navigators/ButtonNavigator).
+        /// </summary>
+        private static void HideNavigatorArrows()
+        {
+            if (cachedNavigatorArrows == null)
+            {
+                cachedNavigatorArrows = UnityEngine.GameObject.Find("GAME UI/Canvas - Game UI/Safe Area/Navigators/ButtonNavigator");
+            }
+            if (cachedNavigatorArrows != null)
+            {
+                cachedNavigatorArrows.SetActive(false);
+            }
+        }
+
+        /// <summary>
+        /// Restores the game's floating navigator arrows.
+        /// </summary>
+        private static void ShowNavigatorArrows()
+        {
+            if (cachedNavigatorArrows != null)
+            {
+                cachedNavigatorArrows.SetActive(true);
             }
         }
 
@@ -3804,8 +4595,26 @@ namespace VSItemTooltips
             }
 
             // Initial position - offset so mouse ends up inside the popup
-            float posX = localPos.x - 15f;
-            float posY = localPos.y + 40f;
+            // In controller mode, shift the first popup left so it doesn't overlap cards.
+            // Recursive popups (popupStack > 0) should appear near the formula icon instead.
+            float posX, posY;
+            if (usingController && popupStack.Count <= 1 && !interactiveMode)
+            {
+                // First popup from dwell — shift left of anchor
+                posX = localPos.x - (popupRect.sizeDelta.x * 0.75f);
+                posY = localPos.y + 15f;
+            }
+            else if (usingController)
+            {
+                // Recursive popup — slight offset down-right from formula icon
+                posX = localPos.x + 15f;
+                posY = localPos.y + 15f;
+            }
+            else
+            {
+                posX = localPos.x - 15f;
+                posY = localPos.y + 40f;
+            }
 
             // Get popup size
             float popupWidth = popupRect.sizeDelta.x;
@@ -3916,6 +4725,18 @@ namespace VSItemTooltips
         private static void HideAllPopups()
         {
             mouseOverPopupIndex = -1;
+            // Reset controller/interactive state
+            interactiveMode = false;
+            passivePopupShown = false;
+            formulaIcons.Clear();
+            currentFormulaIndex = -1;
+            formulaIconData.Clear();
+            if (interactiveHighlight != null)
+            {
+                UnityEngine.Object.Destroy(interactiveHighlight);
+                interactiveHighlight = null;
+            }
+
             foreach (var popup in popupStack)
             {
                 if (popup != null)
@@ -3934,6 +4755,12 @@ namespace VSItemTooltips
                 var topPopup = popupStack[popupStack.Count - 1];
                 if (topPopup != null)
                 {
+                    // Clean up formulaIconData for icons in this popup
+                    var triggers = topPopup.GetComponentsInChildren<UnityEngine.EventSystems.EventTrigger>(false);
+                    foreach (var trigger in triggers)
+                    {
+                        formulaIconData.Remove(trigger.gameObject.GetInstanceID());
+                    }
                     UnityEngine.Object.Destroy(topPopup);
                 }
                 popupStack.RemoveAt(popupStack.Count - 1);
@@ -4027,7 +4854,16 @@ namespace VSItemTooltips
 
         private static void ShowCollectionPopup(WeaponType? weaponType, ItemType? itemType, object arcanaType = null)
         {
+            // If in interactive mode, push current popup data onto back stack before replacing
+            if (interactiveMode && collectionPopup != null)
+            {
+                collectionPopupBackStack.Add(currentCollectionPopupData);
+            }
+
             HideCollectionPopup();
+
+            // Track what this popup is showing (for back-stack navigation)
+            currentCollectionPopupData = (weaponType, itemType, arcanaType);
 
             // Try to cache data if not cached yet (needed for popup content)
             if (cachedDataManager == null)
@@ -4096,9 +4932,16 @@ namespace VSItemTooltips
         {
             if (collectionPopup != null)
             {
+                // Clean up formulaIconData for icons in collection popup
+                var triggers = collectionPopup.GetComponentsInChildren<UnityEngine.EventSystems.EventTrigger>(false);
+                foreach (var trigger in triggers)
+                {
+                    formulaIconData.Remove(trigger.gameObject.GetInstanceID());
+                }
                 UnityEngine.Object.Destroy(collectionPopup);
                 collectionPopup = null;
             }
+            passivePopupShown = false;
         }
 
         #endregion
@@ -4305,14 +5148,35 @@ namespace VSItemTooltips
 
             if (useClick)
             {
-                // Click to open popup (for icons inside popups)
-                var clickEntry = new UnityEngine.EventSystems.EventTrigger.Entry();
-                clickEntry.eventID = UnityEngine.EventSystems.EventTriggerType.PointerClick;
-                clickEntry.callback.AddListener((UnityEngine.Events.UnityAction<UnityEngine.EventSystems.BaseEventData>)((data) =>
+                // Register for controller/keyboard navigation
+                formulaIconData[go.GetInstanceID()] = (weaponType, itemType);
+
+                // Add Button component so this icon can be selected by the EventSystem
+                // (enables keyboard/controller navigation and Submit handling)
+                var button = go.AddComponent<UnityEngine.UI.Button>();
+                var containerImage = go.GetComponent<UnityEngine.UI.Image>();
+                if (containerImage != null)
+                    button.targetGraphic = containerImage;
+
+                // Color transitions for selection highlight
+                var colors = button.colors;
+                colors.normalColor = new UnityEngine.Color(0f, 0f, 0f, 0f);
+                colors.highlightedColor = new UnityEngine.Color(0f, 0.9f, 1f, 0.2f);
+                colors.selectedColor = new UnityEngine.Color(0f, 0.9f, 1f, 0.35f);
+                colors.pressedColor = new UnityEngine.Color(0f, 0.9f, 1f, 0.5f);
+                colors.fadeDuration = 0.1f;
+                button.colors = colors;
+
+                // Wire onClick for both mouse clicks and keyboard Submit (Enter/Space)
+                button.onClick.AddListener((UnityEngine.Events.UnityAction)(() =>
                 {
                     ShowItemPopup(go.transform, weaponType, itemType);
                 }));
-                eventTrigger.triggers.Add(clickEntry);
+
+                // Disable navigation by default — EnterInteractiveMode sets up explicit links
+                var nav = button.navigation;
+                nav.mode = UnityEngine.UI.Navigation.Mode.None;
+                button.navigation = nav;
             }
             else
             {
