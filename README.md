@@ -6,6 +6,8 @@ If you enjoy this mod, consider supporting me!
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/nihilxd)
 
+**[Download the latest release here](https://github.com/NihilXD/VSEvolutionHelper/releases/latest)**
+
 ## Supported Screens
 
 Tooltips work on every screen where weapon/item icons appear:
