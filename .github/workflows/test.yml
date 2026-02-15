@@ -9,26 +9,33 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v3
       with:
         dotnet-version: 6.0.x
-    
-    - name: Restore dependencies
-      run: dotnet restore
-    
-    - name: Build
-      run: dotnet build --no-restore --configuration Release
-    
-    - name: Run tests
-      run: dotnet test --no-build --configuration Release --verbosity normal --collect:"XPlat Code Coverage"
-    
+
+    - name: Restore dependencies (Core library only)
+      run: dotnet restore VSEvolutionHelper.Core/VSEvolutionHelper.Core.csproj
+
+    - name: Build Core library
+      run: dotnet build VSEvolutionHelper.Core/VSEvolutionHelper.Core.csproj --no-restore --configuration Release
+
+    - name: Restore test dependencies
+      run: dotnet restore Tests/VSEvolutionHelper.Tests.csproj
+
+    - name: Run tests (Core logic only - no game dependencies!)
+      run: dotnet test Tests/VSEvolutionHelper.Tests.csproj --no-restore --configuration Release --verbosity normal --collect:"XPlat Code Coverage" --logger "console;verbosity=detailed"
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:
         files: '**/coverage.cobertura.xml'
         fail_ci_if_error: false
+
+    # Note: Main mod project (VSEvolutionHelper.csproj) is NOT built in CI
+    # because it requires game-specific DLLs (MelonLoader, Unity, IL2CPP)
+    # that are only available locally. Build the mod locally instead.
