@@ -45,27 +45,52 @@ namespace VSItemTooltips
         private static Dictionary<int, WeaponType> uiToWeaponType = new Dictionary<int, WeaponType>();
         private static Dictionary<int, ItemType> uiToItemType = new Dictionary<int, ItemType>();
 
-        // Sprite name to item type lookup (built on first use)
-        private static Dictionary<string, WeaponType> spriteToWeaponType = null;
-        private static Dictionary<string, ItemType> spriteToItemType = null;
-        private static bool lookupTablesBuilt = false;
-        private static bool loggedLookupTables = false;
+        // Wrapper properties - redirect to GameDataCache (gradual migration in progress)
+        private static Dictionary<string, WeaponType> spriteToWeaponType
+        {
+            get => GameDataCache.SpriteToWeaponType;
+            set { } // Setter handled by GameDataCache.BuildLookupTables()
+        }
+        private static Dictionary<string, ItemType> spriteToItemType
+        {
+            get => GameDataCache.SpriteToItemType;
+            set { } // Setter handled by GameDataCache.BuildLookupTables()
+        }
+        private static bool lookupTablesBuilt
+        {
+            get => GameDataCache.LookupTablesBuilt;
+            set { } // Setter handled by GameDataCache.BuildLookupTables()
+        }
+        private static bool loggedLookupTables = false; // Local flag, not in cache
 
-        // Data manager cache
-        private static object cachedDataManager = null;
-        private static object cachedWeaponsDict = null;
-        private static object cachedPowerUpsDict = null;
-
-        // Evolution formula cache (built once from game data)
-        private static VSItemTooltips.Adapters.EvolutionFormulaCache evolutionCache = null;
-
-        // Game session cache (for accessing player inventory)
-        private static object cachedGameSession = null;
-
-        // Arcana cache
-        private static System.Type cachedArcanaTypeEnum = null;
-        private static object cachedAllArcanas = null;
-        private static object cachedGameManager = null;
+        private static object cachedDataManager
+        {
+            get => GameDataCache.DataManager;
+            set => GameDataCache.CacheDataManager(value);
+        }
+        private static object cachedWeaponsDict => GameDataCache.WeaponsDict;
+        private static object cachedPowerUpsDict => GameDataCache.PowerUpsDict;
+        private static VSItemTooltips.Adapters.EvolutionFormulaCache evolutionCache
+        {
+            get => GameDataCache.EvolutionCache;
+            set { } // Setter handled by GameDataCache.CacheDataManager()
+        }
+        private static object cachedGameSession
+        {
+            get => GameDataCache.GameSession;
+            set => GameDataCache.CacheGameSession(value);
+        }
+        private static System.Type cachedArcanaTypeEnum
+        {
+            get => GameDataCache.ArcanaTypeEnum;
+            set => GameDataCache.SetArcanaTypeEnum(value);
+        }
+        private static object cachedAllArcanas => GameDataCache.GetAllArcanas();
+        private static object cachedGameManager
+        {
+            get => GameDataCache.GameManager;
+            set => GameDataCache.SetGameManager(value);
+        }
         private static bool arcanaDebugLogged = false;
         private static HashSet<WeaponType> arcanaWeaponDebugLogged = new HashSet<WeaponType>();
         private static Dictionary<int, (HashSet<WeaponType> weapons, HashSet<ItemType> items)> arcanaUICache =
@@ -362,10 +387,10 @@ namespace VSItemTooltips
             // Reset caching state when a new scene loads
             triedEarlyCaching = false;
 
-            // Clear per-run state so arcanas and ownership reflect the new run
-            cachedGameSession = null;
-            cachedGameManager = null;
-            cachedAllArcanas = null;
+            // Clear per-run state (handled by GameDataCache)
+            GameDataCache.ClearPerRunCaches();
+
+            // Clear local per-run state
             cachedSafeArea = null;
             panelCapturedWeapons.Clear();
             panelCapturedItems.Clear();
@@ -2098,51 +2123,10 @@ namespace VSItemTooltips
             }
         }
 
+        // Wrapper method - delegates to GameDataCache
         public static void CacheDataManager(object dataManager)
         {
-            if (dataManager == null) return;
-
-            cachedDataManager = dataManager;
-
-            try
-            {
-                var dmType = dataManager.GetType();
-
-                var getWeaponsMethod = dmType.GetMethod("GetConvertedWeapons");
-                var getPowerUpsMethod = dmType.GetMethod("GetConvertedPowerUpData");
-
-                if (getWeaponsMethod != null)
-                {
-                    cachedWeaponsDict = getWeaponsMethod.Invoke(dataManager, null);
-                }
-
-                if (getPowerUpsMethod != null)
-                {
-                    cachedPowerUpsDict = getPowerUpsMethod.Invoke(dataManager, null);
-                }
-
-                // Rebuild lookup tables with new data
-                lookupTablesBuilt = false;
-                BuildLookupTables();
-
-                // Build evolution formula cache (this enables EvolutionFormulaService usage)
-                try
-                {
-                    var adapter = new VSItemTooltips.Adapters.GameDataAdapter(null);
-                    evolutionCache = new VSItemTooltips.Adapters.EvolutionFormulaCache(adapter, null);
-                    evolutionCache.BuildCache();
-                    MelonLogger.Msg($"Evolution formula cache built: {evolutionCache.Count} formulas");
-                }
-                catch (Exception cacheEx)
-                {
-                    MelonLogger.Warning($"Failed to build evolution cache: {cacheEx.Message}");
-                    evolutionCache = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Error($"Error caching data manager: {ex}");
-            }
+            GameDataCache.CacheDataManager(dataManager);
         }
 
         #endregion
@@ -6239,20 +6223,14 @@ namespace VSItemTooltips
             {
                 if (cachedDataManager == null || arcanaType == null) return null;
 
-                if (cachedAllArcanas == null)
-                {
-                    var allArcanasProp = cachedDataManager.GetType().GetProperty("AllArcanas", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (allArcanasProp != null)
-                    {
-                        cachedAllArcanas = allArcanasProp.GetValue(cachedDataManager);
-                    }
-                }
-                if (cachedAllArcanas == null) return null;
+                // Get AllArcanas from GameDataCache (handles caching internally)
+                var allArcanas = cachedAllArcanas;
+                if (allArcanas == null) return null;
 
-                var indexer = cachedAllArcanas.GetType().GetProperty("Item");
+                var indexer = allArcanas.GetType().GetProperty("Item");
                 if (indexer == null) return null;
 
-                return indexer.GetValue(cachedAllArcanas, new object[] { arcanaType });
+                return indexer.GetValue(allArcanas, new object[] { arcanaType });
             }
             catch
             {

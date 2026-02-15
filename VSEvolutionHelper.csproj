@@ -9,6 +9,14 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);Tests\**\*;VSEvolutionHelper.Core\**\*</DefaultItemExcludes>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
   <ItemGroup>
     <!-- Reference the Core library for testable logic -->
     <ProjectReference Include="VSEvolutionHelper.Core\VSEvolutionHelper.Core.csproj" />
