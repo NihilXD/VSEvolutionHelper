@@ -3976,70 +3976,18 @@ namespace VSItemTooltips
         /// Counts how many weapons use this type as a passive requirement in their evoSynergy.
         /// Optionally filters out dual-weapon partners (weapons that produce the same evolved
         /// weapon as ownEvoInto, which are just the other side of a combo evolution).
+        /// Now uses EvolutionFormulaCache for O(1) lookup instead of O(n) iteration.
         /// </summary>
         private static int CountPassiveUses(WeaponType passiveType, string ownEvoInto = null)
         {
-            if (cachedWeaponsDict == null) return 0;
-
-            int count = 0;
-            int passiveInt = (int)passiveType;
-
-            try
+            // Use cache if available (fast O(1) lookup)
+            if (evolutionCache != null)
             {
-                var keysProperty = cachedWeaponsDict.GetType().GetProperty("Keys");
-                if (keysProperty == null) return 0;
-
-                var keys = keysProperty.GetValue(cachedWeaponsDict);
-                var enumerator = keys.GetType().GetMethod("GetEnumerator").Invoke(keys, null);
-                var moveNext = enumerator.GetType().GetMethod("MoveNext");
-                var current = enumerator.GetType().GetProperty("Current");
-
-                while ((bool)moveNext.Invoke(enumerator, null))
-                {
-                    var weaponType = (WeaponType)current.GetValue(enumerator);
-                    if (weaponType == passiveType) continue; // Skip self
-
-                    var weaponDataList = GetWeaponDataList(weaponType);
-                    if (weaponDataList == null) continue;
-
-                    for (int i = 0; i < weaponDataList.Count; i++)
-                    {
-                        var weaponData = weaponDataList[i];
-                        if (weaponData == null) continue;
-
-                        try
-                        {
-                            var synergyProp = weaponData.GetType().GetProperty("evoSynergy");
-                            if (synergyProp == null) continue;
-
-                            var synergy = synergyProp.GetValue(weaponData) as Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<WeaponType>;
-                            if (synergy == null || synergy.Length == 0) continue;
-
-                            string evoInto = GetPropertyValue<string>(weaponData, "evoInto");
-                            if (string.IsNullOrEmpty(evoInto)) continue;
-
-                            // Skip dual-weapon partner: if this weapon evolves into the same
-                            // thing as our weapon, it's just the reverse side of the same combo
-                            if (ownEvoInto != null && evoInto == ownEvoInto) continue;
-
-                            for (int j = 0; j < synergy.Length; j++)
-                            {
-                                if ((int)synergy[j] == passiveInt)
-                                {
-                                    count++;
-                                    break; // Count each weapon only once
-                                }
-                            }
-                        }
-                        catch { }
-
-                        break; // Only check first level of each weapon
-                    }
-                }
+                return evolutionCache.CountPassiveUsages(passiveType, ownEvoInto);
             }
-            catch { }
 
-            return count;
+            // Fallback: return 0 if cache not built yet
+            return 0;
         }
 
         private static float AddWeaponEvolutionSection(UnityEngine.Transform parent, Il2CppTMPro.TMP_FontAsset font, WeaponType weaponType, float yOffset, float maxWidth)
