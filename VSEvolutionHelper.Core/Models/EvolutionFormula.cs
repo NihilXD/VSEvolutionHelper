@@ -8,21 +8,33 @@ namespace VSItemTooltips.Core.Models
     /// </summary>
     public class EvolutionFormula
     {
-        /// <summary>Base weapon that evolves</summary>
+        /// <summary>Base weapon ID (e.g., "WHIP")</summary>
+        public string BaseWeaponId { get; set; }
+
+        /// <summary>Base weapon display name</summary>
+        public string BaseWeaponName { get; set; }
+
+        /// <summary>Evolved weapon ID (e.g., "BLOODY_TEAR")</summary>
+        public string EvolvedWeaponId { get; set; }
+
+        /// <summary>Evolved weapon display name</summary>
+        public string EvolvedWeaponName { get; set; }
+
+        /// <summary>Base weapon that evolves (full info, optional)</summary>
         public WeaponInfo BaseWeapon { get; set; }
-        
-        /// <summary>Evolved weapon (result)</summary>
+
+        /// <summary>Evolved weapon (result, full info, optional)</summary>
         public WeaponInfo EvolvedWeapon { get; set; }
-        
+
         /// <summary>Required passives (weapons or items)</summary>
         public List<PassiveRequirement> RequiredPassives { get; set; } = new List<PassiveRequirement>();
-        
+
         /// <summary>Is this formula complete (player has all requirements)?</summary>
         public bool IsComplete { get; set; }
-        
+
         /// <summary>Missing requirements (if not complete)</summary>
         public List<PassiveRequirement> MissingRequirements { get; set; } = new List<PassiveRequirement>();
-        
+
         /// <summary>Are any of the required items banned?</summary>
         public bool HasBannedRequirements { get; set; }
     }

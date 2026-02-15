@@ -13,9 +13,9 @@ namespace VSItemTooltips.Adapters
     /// </summary>
     public class GameDataAdapter
     {
-        private readonly ItemTooltipsMod _mod;
+        private readonly ItemTooltipsMod _mod; // Currently unused - uses static methods
 
-        public GameDataAdapter(ItemTooltipsMod mod)
+        public GameDataAdapter(ItemTooltipsMod mod = null)
         {
             _mod = mod;
         }

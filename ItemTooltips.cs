@@ -56,6 +56,9 @@ namespace VSItemTooltips
         private static object cachedWeaponsDict = null;
         private static object cachedPowerUpsDict = null;
 
+        // Evolution formula cache (built once from game data)
+        private static VSItemTooltips.Adapters.EvolutionFormulaCache evolutionCache = null;
+
         // Game session cache (for accessing player inventory)
         private static object cachedGameSession = null;
 
@@ -2126,6 +2129,20 @@ namespace VSItemTooltips
                 // Rebuild lookup tables with new data
                 lookupTablesBuilt = false;
                 BuildLookupTables();
+
+                // Build evolution formula cache (this enables EvolutionFormulaService usage)
+                try
+                {
+                    var adapter = new VSItemTooltips.Adapters.GameDataAdapter(null);
+                    evolutionCache = new VSItemTooltips.Adapters.EvolutionFormulaCache(adapter, null);
+                    evolutionCache.BuildCache();
+                    MelonLogger.Msg($"Evolution formula cache built: {evolutionCache.Count} formulas");
+                }
+                catch (Exception cacheEx)
+                {
+                    MelonLogger.Warning($"Failed to build evolution cache: {cacheEx.Message}");
+                    evolutionCache = null;
+                }
             }
             catch (Exception ex)
             {
@@ -5018,57 +5035,40 @@ namespace VSItemTooltips
                     affectsRect.sizeDelta = new UnityEngine.Vector2(maxWidth - Padding * 2, 20f);
                     yOffset -= 22f;
 
-                    // Grid layout for affected items
+                    // Grid layout using tested IconGridLayout service
                     float iconSize = 38f;
                     float iconSpacing = 6f;
                     float availableWidth = maxWidth - Padding * 2;
-                    int iconsPerRow = (int)(availableWidth / (iconSize + iconSpacing));
-                    if (iconsPerRow < 1) iconsPerRow = 1;
 
-                    int col = 0;
+                    var gridLayout = new VSItemTooltips.Core.Services.IconGridLayout(iconSize, iconSpacing);
+                    var (rows, cols) = gridLayout.CalculateGrid(totalAffected, availableWidth);
+
                     int itemIndex = 0;
 
                     // Weapons first
                     foreach (var wt in affectedWeapons)
                     {
-                        float x = Padding + col * (iconSize + iconSpacing);
+                        var (x, y) = gridLayout.GetIconPosition(itemIndex, cols);
                         bool owned = PlayerOwnsWeapon(wt);
                         var sprite = GetSpriteForWeapon(wt);
-                        var icon = CreateFormulaIcon(popup.transform, $"AffectedWeapon{itemIndex}", sprite, owned, IsWeaponBanned(wt), iconSize, x, yOffset);
+                        var icon = CreateFormulaIcon(popup.transform, $"AffectedWeapon{itemIndex}", sprite, owned, IsWeaponBanned(wt), iconSize, Padding + x, yOffset + y);
                         AddHoverToGameObject(icon, wt, null, useClick: true);
-
-                        col++;
-                        if (col >= iconsPerRow)
-                        {
-                            col = 0;
-                            yOffset -= iconSize + iconSpacing;
-                        }
                         itemIndex++;
                     }
 
                     // Then passive items
                     foreach (var it in affectedItems)
                     {
-                        float x = Padding + col * (iconSize + iconSpacing);
+                        var (x, y) = gridLayout.GetIconPosition(itemIndex, cols);
                         bool owned = PlayerOwnsItem(it);
                         var sprite = GetSpriteForItem(it);
-                        var icon = CreateFormulaIcon(popup.transform, $"AffectedItem{itemIndex}", sprite, owned, IsItemBanned(it), iconSize, x, yOffset);
+                        var icon = CreateFormulaIcon(popup.transform, $"AffectedItem{itemIndex}", sprite, owned, IsItemBanned(it), iconSize, Padding + x, yOffset + y);
                         AddHoverToGameObject(icon, null, it, useClick: true);
-
-                        col++;
-                        if (col >= iconsPerRow)
-                        {
-                            col = 0;
-                            yOffset -= iconSize + iconSpacing;
-                        }
                         itemIndex++;
                     }
 
-                    // If last row wasn't complete, still account for its height
-                    if (col > 0)
-                    {
-                        yOffset -= iconSize + iconSpacing;
-                    }
+                    // Update yOffset for the total grid height
+                    yOffset -= gridLayout.CalculateGridHeight(rows);
                 }
             }
 
