@@ -1,3 +1,4 @@
+﻿#nullable disable
 using MelonLoader;
 using HarmonyLib;
 using System;
@@ -21,7 +22,7 @@ namespace VSItemTooltips
     /// </summary>
     public class ItemTooltipsMod : MelonMod
     {
-        private static HarmonyLib.Harmony harmonyInstance;
+        private new static HarmonyLib.Harmony harmonyInstance;
 
         // State tracking
         private static bool wasGamePaused = false;
@@ -384,9 +385,23 @@ namespace VSItemTooltips
                 // Method 1: Try FindObjectOfType for DataManager directly
                 try
                 {
-                    var dataManagerType = System.AppDomain.CurrentDomain.GetAssemblies()
-                        .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
-                        .FirstOrDefault(t => t.Name == "DataManager" && t.Namespace != null && t.Namespace.Contains("VampireSurvivors"));
+                    System.Type dataManagerType = null;
+                    foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        try
+                        {
+                            foreach (var t in assembly.GetTypes())
+                            {
+                                if (t.Name == "DataManager" && t.Namespace != null && t.Namespace.Contains("VampireSurvivors"))
+                                {
+                                    dataManagerType = t;
+                                    break;
+                                }
+                            }
+                            if (dataManagerType != null) break;
+                        }
+                        catch { }
+                    }
 
                     if (dataManagerType != null)
                     {
@@ -407,9 +422,23 @@ namespace VSItemTooltips
                 catch { }
 
                 // Method 2: Try GameManager.Instance.Data
-                var gameManagerType = System.AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
-                    .FirstOrDefault(t => t.Name == "GameManager");
+                System.Type gameManagerType = null;
+                foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        foreach (var t in assembly.GetTypes())
+                        {
+                            if (t.Name == "GameManager")
+                            {
+                                gameManagerType = t;
+                                break;
+                            }
+                        }
+                        if (gameManagerType != null) break;
+                    }
+                    catch { }
+                }
 
                 if (gameManagerType != null)
                 {
@@ -1988,9 +2017,23 @@ namespace VSItemTooltips
             try
             {
                 // Try GameManager.Instance.Data
-                var gameManagerType = System.AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
-                    .FirstOrDefault(t => t.Name == "GameManager");
+                System.Type gameManagerType = null;
+                foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        foreach (var t in assembly.GetTypes())
+                        {
+                            if (t.Name == "GameManager")
+                            {
+                                gameManagerType = t;
+                                break;
+                            }
+                        }
+                        if (gameManagerType != null) break;
+                    }
+                    catch { }
+                }
 
                 if (gameManagerType != null)
                 {
