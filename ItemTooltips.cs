@@ -171,7 +171,10 @@ namespace VSItemTooltips
                             return;
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching assembly for LevelUpItemUI: {ex.Message}");
+                    }
                 }
                 MelonLogger.Warning("LevelUpItemUI type not found in any assembly");
             }
@@ -196,7 +199,10 @@ namespace VSItemTooltips
                         GameDataCache.SetArcanaTypeEnum(arcanaTypeEnum);
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Error discovering ArcanaType enum: {ex.Message}");
+                }
 
                 // Search ALL types that might be icon/equipment related
                 foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
@@ -292,7 +298,10 @@ namespace VSItemTooltips
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching assembly '{assembly.FullName}' for icon types: {ex.Message}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -324,7 +333,10 @@ namespace VSItemTooltips
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching assembly for MerchantPage: {ex.Message}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -377,7 +389,10 @@ namespace VSItemTooltips
                             }
                             if (dataManagerType != null) break;
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Warning($"Error searching assembly for DataManager type: {ex.Message}");
+                        }
                     }
 
                     if (dataManagerType != null)
@@ -396,7 +411,10 @@ namespace VSItemTooltips
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Error in FindObjectOfType for DataManager: {ex.Message}");
+                }
 
                 // Method 2: Try GameManager.Instance.Data
                 System.Type gameManagerType = null;
@@ -414,7 +432,10 @@ namespace VSItemTooltips
                         }
                         if (gameManagerType != null) break;
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching assembly for GameManager type in TryEarlyCaching: {ex.Message}");
+                    }
                 }
 
                 if (gameManagerType != null)
@@ -444,7 +465,10 @@ namespace VSItemTooltips
                                 }
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Warning($"Error accessing GameManager static member '{member.Name}': {ex.Message}");
+                        }
                     }
 
                     if (instance != null)
@@ -464,7 +488,10 @@ namespace VSItemTooltips
                                         return;
                                     }
                                 }
-                                catch { }
+                                catch (Exception ex)
+                                {
+                                    MelonLogger.Warning($"Error accessing property '{prop.Name}' on GameManager instance: {ex.Message}");
+                                }
                             }
                         }
                     }
@@ -1056,7 +1083,10 @@ namespace VSItemTooltips
                             break;
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching assembly for WeaponSelectionItemUI: {ex.Message}");
+                    }
                 }
             }
 
@@ -1174,7 +1204,10 @@ namespace VSItemTooltips
                             if (typeVal is WeaponType wt) weaponType = wt;
                             else if (typeVal is ItemType it) itemType = it;
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Warning($"Error accessing Type property on component '{compType.Name}': {ex.Message}");
+                        }
                     }
 
                     // Check _type field
@@ -1189,7 +1222,10 @@ namespace VSItemTooltips
                                 if (typeVal is WeaponType wt) weaponType = wt;
                                 else if (typeVal is ItemType it) itemType = it;
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                MelonLogger.Warning($"Error accessing _type field on component '{compType.Name}': {ex.Message}");
+                            }
                         }
                     }
 
@@ -1204,7 +1240,10 @@ namespace VSItemTooltips
                                 var val = weaponProp.GetValue(comp);
                                 if (val is WeaponType wt) weaponType = wt;
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                MelonLogger.Warning($"Error accessing WeaponType property on component '{compType.Name}': {ex.Message}");
+                            }
                         }
 
                         var itemProp = compType.GetProperty("ItemType", BindingFlags.Public | BindingFlags.Instance);
@@ -1215,7 +1254,10 @@ namespace VSItemTooltips
                                 var val = itemProp.GetValue(comp);
                                 if (val is ItemType it) itemType = it;
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                MelonLogger.Warning($"Error accessing ItemType property on component '{compType.Name}': {ex.Message}");
+                            }
                         }
                     }
 
@@ -1517,7 +1559,10 @@ namespace VSItemTooltips
                             break;
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error in FindObjectOfType for GameSessionData: {ex.Message}");
+                    }
                 }
 
                 // Method 0.5: Try to find "Game" GameObject and get GameManager component
@@ -1555,7 +1600,10 @@ namespace VSItemTooltips
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Error finding GameManager from Game GameObject: {ex.Message}");
+                }
 
                 // Method 1: Look for GameSessionData type with static Instance
                 foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
@@ -1588,7 +1636,10 @@ namespace VSItemTooltips
                                         }
                                     }
                                 }
-                                catch { }
+                                catch (Exception ex)
+                                {
+                                    MelonLogger.Warning($"Error accessing Instance property on session type: {ex.Message}");
+                                }
                             }
 
                             // Try static _instance field
@@ -1611,11 +1662,17 @@ namespace VSItemTooltips
                                         }
                                     }
                                 }
-                                catch { }
+                                catch (Exception ex)
+                                {
+                                    MelonLogger.Warning($"Error accessing instance field on session type: {ex.Message}");
+                                }
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching for GameSessionData type with Instance: {ex.Message}");
+                    }
                 }
 
                 // Method 2: Search all components on active views for _gameSession property
@@ -1691,7 +1748,10 @@ namespace VSItemTooltips
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Error accessing session property/field '{name}' in TryGetSessionFromComponent: {ex.Message}");
+                }
             }
 
             return false;
@@ -1839,7 +1899,10 @@ namespace VSItemTooltips
                         }
                         if (gameManagerType != null) break;
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error searching assembly for GameManager in TryCacheDataManagerStatic: {ex.Message}");
+                    }
                 }
 
                 if (gameManagerType != null)
@@ -1861,7 +1924,10 @@ namespace VSItemTooltips
                                 if (instance != null) break;
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Warning($"Error accessing static member '{member.Name}' in TryCacheDataManagerStatic: {ex.Message}");
+                        }
                     }
 
                     if (instance != null)
@@ -1880,7 +1946,10 @@ namespace VSItemTooltips
                                         return;
                                     }
                                 }
-                                catch { }
+                                catch (Exception ex)
+                                {
+                                    MelonLogger.Warning($"Error accessing property '{prop.Name}' on GameManager instance in TryCacheDataManagerStatic: {ex.Message}");
+                                }
                             }
                         }
                     }
@@ -3313,7 +3382,10 @@ namespace VSItemTooltips
                 }
                 return result.Count > 0 ? result : null;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"Error reading requiresMax from weapon data: {ex.Message}");
+            }
             return null;
         }
 
@@ -3370,7 +3442,10 @@ namespace VSItemTooltips
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"Error checking if player owns accessory '{weaponType}': {ex.Message}");
+            }
 
             return false;
         }
@@ -4537,7 +4612,10 @@ namespace VSItemTooltips
                             return;
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error accessing property '{prop.Name}' in TryCacheGameSessionFromLevelUpPage: {ex.Message}");
+                    }
                 }
             }
 
@@ -4876,7 +4954,10 @@ namespace VSItemTooltips
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error accessing session property '{name}' in TryCacheSessionFromArg: {ex.Message}");
+                    }
                 }
 
                 var field = argType.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
@@ -4895,7 +4976,10 @@ namespace VSItemTooltips
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"Error accessing session field '{name}' in TryCacheSessionFromArg: {ex.Message}");
+                    }
                 }
             }
 
@@ -4916,7 +5000,10 @@ namespace VSItemTooltips
                                 return;
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Warning($"Error accessing DataManager property '{prop.Name}' in TryCacheSessionFromArg: {ex.Message}");
+                        }
                     }
                 }
 
@@ -4934,7 +5021,10 @@ namespace VSItemTooltips
                                 return;
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Warning($"Error accessing DataManager field '{field.Name}' in TryCacheSessionFromArg: {ex.Message}");
+                        }
                     }
                 }
             }
@@ -5031,7 +5121,10 @@ namespace VSItemTooltips
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Error accessing session property '{name}' on object '{objName}': {ex.Message}");
+                }
             }
             return false;
         }
@@ -5115,7 +5208,10 @@ namespace VSItemTooltips
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"Error accessing DataManager property '{name}' on object: {ex.Message}");
+                }
             }
         }
 
