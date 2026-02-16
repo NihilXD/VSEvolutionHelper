@@ -46,13 +46,9 @@ namespace VSItemTooltips
         private static Dictionary<int, ItemType> uiToItemType = new Dictionary<int, ItemType>();
 
         // NOTE: All data caching (DataManager, GameSession, lookup tables, etc.) is now in GameDataCache.cs
+        // Arcana state is managed by ArcanaDataHelper
         // Local tracking flag only
         private static bool loggedLookupTables = false;
-        private static bool arcanaDebugLogged = false;
-        private static HashSet<WeaponType> arcanaWeaponDebugLogged = new HashSet<WeaponType>();
-        private static Dictionary<int, (HashSet<WeaponType> weapons, HashSet<ItemType> items)> arcanaUICache =
-            new Dictionary<int, (HashSet<WeaponType>, HashSet<ItemType>)>();
-        private static Dictionary<string, int> arcanaNameToInt = new Dictionary<string, int>();
 
         // Collection screen hover tracking (no EventTriggers - uses per-frame raycast)
         private static Dictionary<int, (UnityEngine.GameObject go, WeaponType? weapon, ItemType? item, object arcanaType)> collectionIcons =
@@ -349,10 +345,9 @@ namespace VSItemTooltips
 
             // Clear local per-run state
             cachedSafeArea = null;
-            panelCapturedWeapons.Clear();
-            panelCapturedItems.Clear();
-            arcanaDebugLogged = false;
-            arcanaWeaponDebugLogged.Clear();
+
+            // Clear arcana-related per-run state (managed by ArcanaDataHelper)
+            ArcanaDataHelper.ClearPerRunCaches();
         }
 
         private void TryEarlyCaching()
@@ -4327,7 +4322,7 @@ namespace VSItemTooltips
             string frameName = frameProp?.GetValue(arcanaData)?.ToString() ?? "";
             string textureName = textureProp?.GetValue(arcanaData)?.ToString() ?? "";
 
-            var arcanaSprite = LoadArcanaSprite(textureName, frameName);
+            var arcanaSprite = DataAccessHelper.LoadArcanaSprite(textureName, frameName);
             var font = GetFont();
 
             if (font != null)
@@ -5111,667 +5106,31 @@ namespace VSItemTooltips
 
         #endregion
 
-        #region Arcana Data Access
-
-        private static object GetGameManager()
-        {
-            if (GameDataCache.GameManager != null) return GameDataCache.GameManager;
-
-            try
-            {
-                var assembly = typeof(WeaponData).Assembly;
-                var gameManagerType = assembly.GetTypes().FirstOrDefault(t => t.Name == "GameManager" && !t.IsInterface && typeof(UnityEngine.Component).IsAssignableFrom(t));
-                if (gameManagerType == null) return null;
-
-                var findMethod = typeof(UnityEngine.Object).GetMethods()
-                    .FirstOrDefault(m => m.Name == "FindObjectOfType" && m.IsGenericMethod && m.GetParameters().Length == 0);
-                if (findMethod == null) return null;
-
-                var genericFind = findMethod.MakeGenericMethod(gameManagerType);
-                GameDataCache.SetGameManager(genericFind.Invoke(null, null));
-                return GameDataCache.GameManager;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static List<object> GetAllActiveArcanaTypes()
-        {
-            var result = new List<object>();
-            try
-            {
-                var assembly = typeof(WeaponData).Assembly;
-
-                if (GameDataCache.ArcanaTypeEnum == null)
-                {
-                    GameDataCache.SetArcanaTypeEnum(assembly.GetTypes().FirstOrDefault(t => t.Name == "ArcanaType"));
-                }
-                if (GameDataCache.ArcanaTypeEnum == null) return result;
-
-                var gameMgr = GetGameManager();
-                if (gameMgr == null) return result;
-
-                var amProp = gameMgr.GetType().GetProperty("_arcanaManager", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (amProp == null) return result;
-
-                var arcanaMgr = amProp.GetValue(gameMgr);
-                if (arcanaMgr == null) return result;
-
-                if (!arcanaDebugLogged)
-                {
-                    arcanaDebugLogged = true;
-
-                    // Dump raw weapon and item counts/values from arcana data
-                    var testArcanas = GetAllActiveArcanaTypesInternal(arcanaMgr);
-                    foreach (var testArcana in testArcanas)
-                    {
-                        var testData = GetArcanaData(testArcana);
-                        if (testData == null) continue;
-
-                        var arcName = testData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(testData);
-
-                        // Dump raw weapons list with ALL int values
-                        var wProp = testData.GetType().GetProperty("weapons", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (wProp != null)
-                        {
-                            var wList = wProp.GetValue(testData);
-                            if (wList != null)
-                            {
-                                var wCount = (int)wList.GetType().GetProperty("Count").GetValue(wList);
-                                var wItem = wList.GetType().GetProperty("Item");
-                                var rawValues = new List<string>();
-                                for (int wi = 0; wi < wCount; wi++)
-                                {
-                                    var w = wItem.GetValue(wList, new object[] { wi });
-                                    if (w == null) { rawValues.Add("null"); continue; }
-                                    var il2cppObj = w as Il2CppSystem.Object;
-                                    if (il2cppObj != null)
-                                    {
-                                        try
-                                        {
-                                            unsafe
-                                            {
-                                                IntPtr ptr = il2cppObj.Pointer;
-                                                int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                                                int raw = *valuePtr;
-                                                bool defined = System.Enum.IsDefined(typeof(WeaponType), raw);
-                                                string name = defined ? ((WeaponType)raw).ToString() : "UNDEFINED";
-                                                rawValues.Add($"{name}({raw})");
-                                            }
-                                        }
-                                        catch { rawValues.Add("decode_error"); }
-                                    }
-                                    else
-                                    {
-                                        rawValues.Add($"not_il2cpp:{w}");
-                                    }
-                                }
-                            }
-                        }
-
-                        // Dump raw items list
-                        var iProp = testData.GetType().GetProperty("items", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (iProp != null)
-                        {
-                            var iList = iProp.GetValue(testData);
-                            if (iList != null)
-                            {
-                                var iCount = (int)iList.GetType().GetProperty("Count").GetValue(iList);
-                                var iItem = iList.GetType().GetProperty("Item");
-                                var rawValues = new List<string>();
-                                for (int ii = 0; ii < iCount; ii++)
-                                {
-                                    var item = iItem.GetValue(iList, new object[] { ii });
-                                    if (item == null) { rawValues.Add("null"); continue; }
-                                    var il2cppObj = item as Il2CppSystem.Object;
-                                    if (il2cppObj != null)
-                                    {
-                                        try
-                                        {
-                                            unsafe
-                                            {
-                                                IntPtr ptr = il2cppObj.Pointer;
-                                                int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                                                int raw = *valuePtr;
-                                                bool defined = System.Enum.IsDefined(typeof(ItemType), raw);
-                                                string name = defined ? ((ItemType)raw).ToString() : "UNDEFINED";
-                                                rawValues.Add($"{name}({raw})");
-                                            }
-                                        }
-                                        catch { rawValues.Add("decode_error"); }
-                                    }
-                                    else
-                                    {
-                                        rawValues.Add($"not_il2cpp:{item}");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Try to find active arcanas collection
-                // Try common property names for the active/chosen arcanas
-                string[] activeArcanaProps = { "ActiveArcanas", "_activeArcanas", "ChosenArcanas", "_chosenArcanas",
-                    "PlayerArcanas", "_playerArcanas", "SelectedArcanas", "_selectedArcanas",
-                    "OwnedArcanas", "_ownedArcanas", "CurrentArcanas", "_currentArcanas" };
-
-                object activeArcanasList = null;
-                foreach (var propName in activeArcanaProps)
-                {
-                    var prop = arcanaMgr.GetType().GetProperty(propName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (prop != null)
-                    {
-                        activeArcanasList = prop.GetValue(arcanaMgr);
-                        if (activeArcanasList != null)
-                        {
-                            break;
-                        }
-                    }
-                    var field = arcanaMgr.GetType().GetField(propName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (field != null)
-                    {
-                        activeArcanasList = field.GetValue(arcanaMgr);
-                        if (activeArcanasList != null)
-                        {
-                            break;
-                        }
-                    }
-                }
-
-                // If we found a list/collection, iterate it
-                if (activeArcanasList != null)
-                {
-                    var countProp = activeArcanasList.GetType().GetProperty("Count");
-                    var itemProp = activeArcanasList.GetType().GetProperty("Item");
-                    if (countProp != null && itemProp != null)
-                    {
-                        int count = (int)countProp.GetValue(activeArcanasList);
-                        for (int i = 0; i < count; i++)
-                        {
-                            var arcana = itemProp.GetValue(activeArcanasList, new object[] { i });
-                            if (arcana != null)
-                            {
-                                result.Add(arcana);
-                            }
-                        }
-                        if (result.Count > 0) return result;
-                    }
-                }
-
-                // Fallback: use SelectedArcana from Config (the pre-run pick)
-                var poProp = arcanaMgr.GetType().GetProperty("_playerOptions", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (poProp == null) return result;
-
-                var playerOpts = poProp.GetValue(arcanaMgr);
-                if (playerOpts == null) return result;
-
-                var configProp = playerOpts.GetType().GetProperty("Config", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (configProp == null) return result;
-
-                var config = configProp.GetValue(playerOpts);
-                if (config == null) return result;
-
-                // Check if arcanas are enabled
-                var selectedMazzoProp = config.GetType().GetProperty("SelectedMazzo", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (selectedMazzoProp != null)
-                {
-                    var mazzoEnabled = (bool)selectedMazzoProp.GetValue(config);
-                    if (!mazzoEnabled) return result;
-                }
-
-                var selectedArcanaProp = config.GetType().GetProperty("SelectedArcana", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (selectedArcanaProp == null) return result;
-
-                var selectedArcanaInt = (int)selectedArcanaProp.GetValue(config);
-
-                var arcanaValues = System.Enum.GetValues(GameDataCache.ArcanaTypeEnum);
-                foreach (var val in arcanaValues)
-                {
-                    if ((int)val == selectedArcanaInt)
-                    {
-                        result.Add(val);
-                        break;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"[Arcana] Error getting active arcanas: {ex.Message}");
-            }
-
-            return result;
-        }
-
-        private static List<object> GetAllActiveArcanaTypesInternal(object arcanaMgr)
-        {
-            var result = new List<object>();
-            try
-            {
-                var prop = arcanaMgr.GetType().GetProperty("ActiveArcanas", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (prop == null) return result;
-                var list = prop.GetValue(arcanaMgr);
-                if (list == null) return result;
-                var countProp = list.GetType().GetProperty("Count");
-                var itemProp = list.GetType().GetProperty("Item");
-                if (countProp == null || itemProp == null) return result;
-                int count = (int)countProp.GetValue(list);
-                for (int i = 0; i < count; i++)
-                {
-                    var item = itemProp.GetValue(list, new object[] { i });
-                    if (item != null) result.Add(item);
-                }
-            }
-            catch { }
-            return result;
-        }
-
-        private static object GetArcanaData(object arcanaType)
-        {
-            try
-            {
-                if (GameDataCache.DataManager == null || arcanaType == null) return null;
-
-                // Get AllArcanas from GameDataCache (handles caching internally)
-                var allArcanas = GameDataCache.GetAllArcanas();
-                if (allArcanas == null) return null;
-
-                var indexer = allArcanas.GetType().GetProperty("Item");
-                if (indexer == null) return null;
-
-                return indexer.GetValue(allArcanas, new object[] { arcanaType });
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static bool IsWeaponAffectedByArcana(WeaponType weaponType, object arcanaData)
-        {
-            try
-            {
-                string targetName = weaponType.ToString();
-                var affected = GetArcanaAffectedWeaponTypes(arcanaData);
-                foreach (var wt in affected)
-                {
-                    if (wt == weaponType) return true;
-                }
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static bool IsItemAffectedByArcana(ItemType itemType, object arcanaData)
-        {
-            try
-            {
-                var affected = GetArcanaAffectedItemTypes(arcanaData);
-                foreach (var it in affected)
-                {
-                    if (it == itemType) return true;
-                }
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static List<WeaponType> GetArcanaAffectedWeaponTypes(object arcanaData)
-        {
-            var weaponTypes = new List<WeaponType>();
-            var seenNames = new HashSet<string>();
-            try
-            {
-                if (arcanaData == null) return weaponTypes;
-
-                var weaponsProp = arcanaData.GetType().GetProperty("weapons", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (weaponsProp == null) return weaponTypes;
-
-                var weapons = weaponsProp.GetValue(arcanaData);
-                if (weapons == null) return weaponTypes;
-
-                var countProp = weapons.GetType().GetProperty("Count");
-                if (countProp == null) return weaponTypes;
-
-                int count = (int)countProp.GetValue(weapons);
-                var itemProp = weapons.GetType().GetProperty("Item");
-                if (itemProp == null) return weaponTypes;
-
-                for (int i = 0; i < count; i++)
-                {
-                    var w = itemProp.GetValue(weapons, new object[] { i });
-                    if (w == null) continue;
-
-                    var il2cppObj = w as Il2CppSystem.Object;
-                    if (il2cppObj == null) continue;
-
-                    try
-                    {
-                        string name = il2cppObj.ToString();
-                        if (string.IsNullOrEmpty(name) || !seenNames.Add(name)) continue;
-
-                        if (System.Enum.TryParse<WeaponType>(name, out var wt))
-                        {
-                            weaponTypes.Add(wt);
-                        }
-                    }
-                    catch { }
-                }
-            }
-            catch { }
-            return weaponTypes;
-        }
-
-        private static List<ItemType> GetArcanaAffectedItemTypes(object arcanaData)
-        {
-            var itemTypes = new List<ItemType>();
-            var seenNames = new HashSet<string>();
-            try
-            {
-                if (arcanaData == null) return itemTypes;
-
-                var itemsProp = arcanaData.GetType().GetProperty("items", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (itemsProp == null) return itemTypes;
-
-                var items = itemsProp.GetValue(arcanaData);
-                if (items == null) return itemTypes;
-
-                var countProp = items.GetType().GetProperty("Count");
-                if (countProp == null) return itemTypes;
-
-                int count = (int)countProp.GetValue(items);
-                var itemProp = items.GetType().GetProperty("Item");
-                if (itemProp == null) return itemTypes;
-
-                for (int i = 0; i < count; i++)
-                {
-                    var item = itemProp.GetValue(items, new object[] { i });
-                    if (item == null) continue;
-
-                    var il2cppObj = item as Il2CppSystem.Object;
-                    if (il2cppObj == null) continue;
-
-                    try
-                    {
-                        string name = il2cppObj.ToString();
-                        if (string.IsNullOrEmpty(name) || !seenNames.Add(name)) continue;
-
-                        if (System.Enum.TryParse<ItemType>(name, out var it))
-                        {
-                            itemTypes.Add(it);
-                        }
-                    }
-                    catch { }
-                }
-            }
-            catch { }
-            return itemTypes;
-        }
-
-        // Delegate to DataAccessHelper
-        private static UnityEngine.Sprite LoadArcanaSprite(string textureName, string frameName) => DataAccessHelper.LoadArcanaSprite(textureName, frameName);
-
-        private static int GetArcanaTypeInt(object arcanaType)
-        {
-            if (arcanaType == null) return -1;
-
-            // Try IL2CPP pointer decode first
-            try
-            {
-                var il2cppObj = arcanaType as Il2CppSystem.Object;
-                if (il2cppObj != null)
-                {
-                    unsafe
-                    {
-                        IntPtr ptr = il2cppObj.Pointer;
-                        int* valuePtr = (int*)((byte*)ptr.ToPointer() + 16);
-                        return *valuePtr;
-                    }
-                }
-            }
-            catch { }
-
-            // Try .NET enum/int conversion
-            try
-            {
-                return Convert.ToInt32(arcanaType);
-            }
-            catch { }
-
-            // Try unboxing via Unbox on Il2CppSystem.Object
-            try
-            {
-                var unboxMethod = arcanaType.GetType().GetMethod("Unbox", BindingFlags.Public | BindingFlags.Instance);
-                if (unboxMethod != null)
-                {
-                    var unboxed = unboxMethod.Invoke(arcanaType, null);
-                    return Convert.ToInt32(unboxed);
-                }
-            }
-            catch { }
-
-            MelonLogger.Warning($"[Arcana] GetArcanaTypeInt failed for type {arcanaType.GetType().FullName}, value: {arcanaType}");
-            return -1;
-        }
-
-        private static void ScanArcanaUI(int arcanaTypeInt, string arcanaName)
-        {
-            if (arcanaUICache.ContainsKey(arcanaTypeInt)) return;
-            if (!GameDataCache.LookupTablesBuilt || GameDataCache.SpriteToWeaponType == null || GameDataCache.SpriteToItemType == null) return;
-
-            var weapons = new HashSet<WeaponType>();
-            var items = new HashSet<ItemType>();
-
-            try
-            {
-
-                // Find TextMeshProUGUI components with the arcana's name
-                var allTmps = UnityEngine.Object.FindObjectsOfType<Il2CppTMPro.TextMeshProUGUI>();
-                UnityEngine.Transform cardContainer = null;
-
-                // Strip rich text for matching - extract plain text name
-                string searchName = arcanaName.Trim();
-                // Also try just the name part after the numeral (e.g., "Gemini" from "I - Gemini")
-                string shortName = searchName.Contains(" - ") ? searchName.Substring(searchName.IndexOf(" - ") + 3).Trim() : searchName;
-
-                int tmpCount = 0;
-                foreach (var tmp in allTmps)
-                {
-                    if (tmp == null || tmp.text == null) continue;
-                    tmpCount++;
-
-                    string tmpText = tmp.text.Trim();
-                    // Strip common rich text tags for comparison
-                    string cleanText = System.Text.RegularExpressions.Regex.Replace(tmpText, "<[^>]+>", "").Trim();
-
-                    // Check for exact match, clean match, or contains match
-                    bool isMatch = tmpText == searchName ||
-                                   cleanText == searchName ||
-                                   tmpText.Contains(searchName) ||
-                                   cleanText.Contains(searchName) ||
-                                   tmpText.Contains(shortName) ||
-                                   cleanText.Contains(shortName);
-
-                    // Log texts that partially match for debugging
-                    if (tmpText.Contains("Gemini") || cleanText.Contains("Gemini") ||
-                        tmpText.Contains("gemini") || cleanText.Contains("gemini") ||
-                        tmpText.Contains("arcana") || tmpText.Contains("Arcana"))
-                    {
-                    }
-
-                    if (isMatch)
-                    {
-
-                        // Walk up to find the card container (try several levels)
-                        var candidate = tmp.transform.parent;
-                        for (int depth = 0; depth < 8 && candidate != null; depth++)
-                        {
-                            // Check if this container has many Image children (the icon grid)
-                            var childImages = candidate.GetComponentsInChildren<UnityEngine.UI.Image>();
-                            if (childImages.Length >= 10)
-                            {
-                                cardContainer = candidate;
-                                break;
-                            }
-                            candidate = candidate.parent;
-                        }
-                        if (cardContainer != null) break;
-                    }
-                }
-
-
-                if (cardContainer == null)
-                {
-                    return;
-                }
-
-                // Scan all Image components under the card container
-                var images = cardContainer.GetComponentsInChildren<UnityEngine.UI.Image>();
-                foreach (var img in images)
-                {
-                    if (img == null || img.sprite == null) continue;
-
-                    string spriteName = img.sprite.name;
-                    if (string.IsNullOrEmpty(spriteName)) continue;
-
-                    // Clean up sprite name (remove .png if present)
-                    string cleanName = spriteName;
-                    if (cleanName.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                        cleanName = cleanName.Substring(0, cleanName.Length - 4);
-
-                    // Check both original and cleaned names against lookup tables
-                    if (GameDataCache.SpriteToWeaponType.TryGetValue(spriteName, out var wt))
-                        weapons.Add(wt);
-                    else if (GameDataCache.SpriteToWeaponType.TryGetValue(cleanName, out var wt2))
-                        weapons.Add(wt2);
-                    else if (GameDataCache.SpriteToItemType.TryGetValue(spriteName, out var it))
-                        items.Add(it);
-                    else if (GameDataCache.SpriteToItemType.TryGetValue(cleanName, out var it2))
-                        items.Add(it2);
-                }
-
-
-                if (weapons.Count > 0 || items.Count > 0)
-                {
-                    arcanaUICache[arcanaTypeInt] = (weapons, items);
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"[Arcana] Error scanning arcana UI: {ex.Message}");
-            }
-        }
-
-        private static List<WeaponType> GetAllArcanaAffectedWeaponTypes(object arcanaData, int arcanaTypeInt = -1, string arcanaName = null)
-        {
-            var result = new HashSet<WeaponType>();
-
-            // Static data
-            foreach (var wt in GetArcanaAffectedWeaponTypes(arcanaData))
-                result.Add(wt);
-
-            // Resolve arcanaTypeInt from name cache if not provided
-            if (arcanaTypeInt < 0 && arcanaName == null)
-            {
-                var nameProp = arcanaData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                arcanaName = nameProp?.GetValue(arcanaData)?.ToString() ?? "";
-                if (arcanaNameToInt.TryGetValue(arcanaName, out var cached))
-                    arcanaTypeInt = cached;
-            }
-
-            // Panel captured data
-            foreach (var wt in panelCapturedWeapons)
-                result.Add(wt);
-
-            // UI scan data
-            if (arcanaTypeInt >= 0)
-            {
-                if (!arcanaUICache.ContainsKey(arcanaTypeInt))
-                    ScanArcanaUI(arcanaTypeInt, arcanaName ?? "");
-
-                if (arcanaUICache.TryGetValue(arcanaTypeInt, out var uiCached))
-                {
-                    foreach (var wt in uiCached.weapons)
-                        result.Add(wt);
-                }
-            }
-
-            return result.ToList();
-        }
-
-        private static List<ItemType> GetAllArcanaAffectedItemTypes(object arcanaData, int arcanaTypeInt = -1, string arcanaName = null)
-        {
-            var result = new HashSet<ItemType>();
-
-            // Static data
-            foreach (var it in GetArcanaAffectedItemTypes(arcanaData))
-                result.Add(it);
-
-            // Resolve arcanaTypeInt from name cache if not provided
-            if (arcanaTypeInt < 0 && arcanaName == null)
-            {
-                var nameProp = arcanaData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                arcanaName = nameProp?.GetValue(arcanaData)?.ToString() ?? "";
-                if (arcanaNameToInt.TryGetValue(arcanaName, out var cached))
-                    arcanaTypeInt = cached;
-            }
-
-            // Panel captured data
-            foreach (var it in panelCapturedItems)
-                result.Add(it);
-
-            // UI scan data
-            if (arcanaTypeInt >= 0)
-            {
-                if (!arcanaUICache.ContainsKey(arcanaTypeInt))
-                    ScanArcanaUI(arcanaTypeInt, arcanaName ?? "");
-
-                if (arcanaUICache.TryGetValue(arcanaTypeInt, out var uiCached))
-                {
-                    foreach (var it in uiCached.items)
-                        result.Add(it);
-                }
-            }
-
-            return result.ToList();
-        }
-
-        // Global sets of weapons/items seen in ArcanaInfoPanel patches
-        private static HashSet<WeaponType> panelCapturedWeapons = new HashSet<WeaponType>();
-        private static HashSet<ItemType> panelCapturedItems = new HashSet<ItemType>();
-
-        public static void CaptureArcanaAffectedWeapon(object arcanaInfoPanel, WeaponType weaponType)
-        {
-            try
-            {
-                panelCapturedWeapons.Add(weaponType);
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"[Arcana] Error capturing weapon from patch: {ex.Message}");
-            }
-        }
-
-        public static void CaptureArcanaAffectedItem(object arcanaInfoPanel, ItemType itemType)
-        {
-            try
-            {
-                panelCapturedItems.Add(itemType);
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"[Arcana] Error capturing item from patch: {ex.Message}");
-            }
-        }
-
+        #region Arcana Data Access - Delegates to ArcanaDataHelper
+
+        // All arcana-related methods now delegate to ArcanaDataHelper for clean separation.
+        // Local state (UI caches, captured sets) are managed by ArcanaDataHelper internally.
+
+        private static object GetGameManager() => ArcanaDataHelper.GetGameManager();
+        private static List<object> GetAllActiveArcanaTypes() => ArcanaDataHelper.GetAllActiveArcanaTypes();
+        private static object GetArcanaData(object arcanaType) => ArcanaDataHelper.GetArcanaData(arcanaType);
+        private static bool IsWeaponAffectedByArcana(WeaponType weaponType, object arcanaData) => ArcanaDataHelper.IsWeaponAffectedByArcana(weaponType, arcanaData);
+        private static bool IsItemAffectedByArcana(ItemType itemType, object arcanaData) => ArcanaDataHelper.IsItemAffectedByArcana(itemType, arcanaData);
+        private static List<WeaponType> GetArcanaAffectedWeaponTypes(object arcanaData) => ArcanaDataHelper.GetArcanaAffectedWeaponTypes(arcanaData);
+        private static List<ItemType> GetArcanaAffectedItemTypes(object arcanaData) => ArcanaDataHelper.GetArcanaAffectedItemTypes(arcanaData);
+        private static int GetArcanaTypeInt(object arcanaType) => ArcanaDataHelper.GetArcanaTypeInt(arcanaType);
+        private static List<WeaponType> GetAllArcanaAffectedWeaponTypes(object arcanaData, int arcanaTypeInt = -1, string arcanaName = null) =>
+            ArcanaDataHelper.GetAllArcanaAffectedWeaponTypes(arcanaData, arcanaTypeInt, arcanaName);
+        private static List<ItemType> GetAllArcanaAffectedItemTypes(object arcanaData, int arcanaTypeInt = -1, string arcanaName = null) =>
+            ArcanaDataHelper.GetAllArcanaAffectedItemTypes(arcanaData, arcanaTypeInt, arcanaName);
+
+        // Capture methods (called by Harmony patches)
+        public static void CaptureArcanaAffectedWeapon(object arcanaInfoPanel, WeaponType weaponType) =>
+            ArcanaDataHelper.CaptureArcanaAffectedWeapon(arcanaInfoPanel, weaponType);
+        public static void CaptureArcanaAffectedItem(object arcanaInfoPanel, ItemType itemType) =>
+            ArcanaDataHelper.CaptureArcanaAffectedItem(arcanaInfoPanel, itemType);
+
+        // Arcana info for UI display
         private struct ArcanaInfo
         {
             public string Name;
@@ -5783,139 +5142,41 @@ namespace VSItemTooltips
 
         private static List<ArcanaInfo> GetActiveArcanasForWeapon(WeaponType weaponType)
         {
+            var helperArcanas = ArcanaDataHelper.GetActiveArcanasForWeapon(weaponType);
             var result = new List<ArcanaInfo>();
-            try
+            foreach (var arcana in helperArcanas)
             {
-                var activeArcanas = GetAllActiveArcanaTypes();
-                foreach (var arcanaType in activeArcanas)
+                result.Add(new ArcanaInfo
                 {
-                    var arcanaData = GetArcanaData(arcanaType);
-                    if (arcanaData == null)
-                    {
-                        continue;
-                    }
-
-                    // Extract arcana type int and name
-                    int arcanaTypeInt = GetArcanaTypeInt(arcanaType);
-                    var arcanaNameProp = arcanaData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    string arcanaName = arcanaNameProp?.GetValue(arcanaData)?.ToString() ?? "?";
-
-                    // Cache the name → int mapping for CreateArcanaPopup
-                    if (arcanaTypeInt >= 0 && !string.IsNullOrEmpty(arcanaName))
-                        arcanaNameToInt[arcanaName] = arcanaTypeInt;
-
-
-                    // Check static data first, then panel capture, then UI scan
-                    bool affectedStatic = IsWeaponAffectedByArcana(weaponType, arcanaData);
-                    bool affectedPanel = !affectedStatic && panelCapturedWeapons.Contains(weaponType);
-                    bool affectedUI = false;
-                    if (!affectedStatic && !affectedPanel && arcanaTypeInt >= 0)
-                    {
-                        if (!arcanaUICache.ContainsKey(arcanaTypeInt))
-                            ScanArcanaUI(arcanaTypeInt, arcanaName);
-                        if (arcanaUICache.TryGetValue(arcanaTypeInt, out var cached))
-                            affectedUI = cached.weapons.Contains(weaponType);
-                    }
-
-                    if (!affectedStatic && !affectedPanel && !affectedUI)
-                    {
-                        continue;
-                    }
-
-                    var nameProp = arcanaData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var descProp = arcanaData.GetType().GetProperty("description", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var frameProp = arcanaData.GetType().GetProperty("frameName", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var textureProp = arcanaData.GetType().GetProperty("texture", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-                    string name = nameProp?.GetValue(arcanaData)?.ToString() ?? "";
-                    string desc = descProp?.GetValue(arcanaData)?.ToString() ?? "";
-                    string frameN = frameProp?.GetValue(arcanaData)?.ToString() ?? "";
-                    string textureN = textureProp?.GetValue(arcanaData)?.ToString() ?? "";
-
-                    var sprite = LoadArcanaSprite(textureN, frameN);
-
-                    result.Add(new ArcanaInfo
-                    {
-                        Name = name,
-                        Description = desc,
-                        Sprite = sprite,
-                        ArcanaData = arcanaData,
-                        ArcanaType = arcanaType
-                    });
-
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"[Arcana] Error getting arcanas for weapon {weaponType}: {ex.Message}");
+                    Name = arcana.Name,
+                    Description = arcana.Description,
+                    Sprite = arcana.Sprite,
+                    ArcanaData = arcana.ArcanaData,
+                    ArcanaType = arcana.ArcanaType
+                });
             }
             return result;
         }
 
         private static List<ArcanaInfo> GetActiveArcanasForItem(ItemType itemType)
         {
+            var helperArcanas = ArcanaDataHelper.GetActiveArcanasForItem(itemType);
             var result = new List<ArcanaInfo>();
-            try
+            foreach (var arcana in helperArcanas)
             {
-                var activeArcanas = GetAllActiveArcanaTypes();
-                foreach (var arcanaType in activeArcanas)
+                result.Add(new ArcanaInfo
                 {
-                    var arcanaData = GetArcanaData(arcanaType);
-                    if (arcanaData == null) continue;
-
-                    int arcanaTypeInt = GetArcanaTypeInt(arcanaType);
-                    var arcanaNameProp = arcanaData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    string arcanaName = arcanaNameProp?.GetValue(arcanaData)?.ToString() ?? "?";
-
-                    if (arcanaTypeInt >= 0 && !string.IsNullOrEmpty(arcanaName))
-                        arcanaNameToInt[arcanaName] = arcanaTypeInt;
-
-                    // Check static data first, then panel capture, then UI scan
-                    bool affectedStatic = IsItemAffectedByArcana(itemType, arcanaData);
-                    bool affectedPanel = !affectedStatic && panelCapturedItems.Contains(itemType);
-                    bool affectedUI = false;
-                    if (!affectedStatic && !affectedPanel && arcanaTypeInt >= 0)
-                    {
-                        if (!arcanaUICache.ContainsKey(arcanaTypeInt))
-                            ScanArcanaUI(arcanaTypeInt, arcanaName);
-                        if (arcanaUICache.TryGetValue(arcanaTypeInt, out var cached))
-                            affectedUI = cached.items.Contains(itemType);
-                    }
-
-                    if (!affectedStatic && !affectedPanel && !affectedUI)
-                    {
-                        continue;
-                    }
-
-                    var nameProp = arcanaData.GetType().GetProperty("name", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var descProp = arcanaData.GetType().GetProperty("description", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var frameProp = arcanaData.GetType().GetProperty("frameName", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var textureProp = arcanaData.GetType().GetProperty("texture", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-                    string name = nameProp?.GetValue(arcanaData)?.ToString() ?? "";
-                    string desc = descProp?.GetValue(arcanaData)?.ToString() ?? "";
-                    string frameN = frameProp?.GetValue(arcanaData)?.ToString() ?? "";
-                    string textureN = textureProp?.GetValue(arcanaData)?.ToString() ?? "";
-
-                    var sprite = LoadArcanaSprite(textureN, frameN);
-
-                    result.Add(new ArcanaInfo
-                    {
-                        Name = name,
-                        Description = desc,
-                        Sprite = sprite,
-                        ArcanaData = arcanaData,
-                        ArcanaType = arcanaType
-                    });
-
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Warning($"[Arcana] Error getting arcanas for item {itemType}: {ex.Message}");
+                    Name = arcana.Name,
+                    Description = arcana.Description,
+                    Sprite = arcana.Sprite,
+                    ArcanaData = arcana.ArcanaData,
+                    ArcanaType = arcana.ArcanaType
+                });
             }
             return result;
         }
+
+        // OLD IMPLEMENTATIONS REMOVED - Now in ArcanaDataHelper
 
         #endregion
     }
